@@ -1,4 +1,3 @@
--- 肚子系统 · 客户端脚本（碰到就吃 + 消化后保持缩小 + 吃人动画 + 状态回环 + 挣扎 + 角度 + 隐藏界面 + 持久化 + 白色条 + 整体大小 + 长宽高 + 脉动 + 走路晃动 + 肚脐 + 真实胸部 + 真实屁股 + 剧烈模式 + 位置/颜色 + 关闭肚子 + 碰撞挤压 + 同步所有/选定玩家 + 实体碰撞箱）
 -- 放置位置：StarterPlayer > StarterPlayerScripts 下的 LocalScript
 
 local Players = game:GetService("Players")
