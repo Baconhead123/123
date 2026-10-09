@@ -1,3 +1,4 @@
+-- 肚子系统 · 客户端脚本
 -- 放置位置：StarterPlayer > StarterPlayerScripts 下的 LocalScript
 
 local Players = game:GetService("Players")
@@ -5,7 +6,6 @@ local RunService = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
-local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 
@@ -17,43 +17,33 @@ local BASE_OFFSET = Vector3.new(0, 0, -0.6)
 local BASE_ROT = Vector3.new(0, 0, 0)
 
 local SHAKE_DURATION = 1
-local SHAKE_INTERVAL_MIN = 0.8
-local SHAKE_INTERVAL_MAX = 2.0
+local SHAKE_INTERVAL_MIN, SHAKE_INTERVAL_MAX = 0.8, 2.0
 local SHAKE_STRENGTH = 0.15
 
 local NAVEL_SIZE_RATIO = 0.12
 local NAVEL_DEPTH = 0.98
 
 local WALK_SPEED_REF = 16
-local WALK_SWING_X = 0.18
-local WALK_SWING_Y = 0.10
-local WALK_LEAN = 0.10
+local WALK_SWING_X, WALK_SWING_Y, WALK_LEAN = 0.18, 0.10, 0.10
 local WALK_SMOOTH = 12
 
 local PULSE_SMOOTH = 3
 
 local STRUGGLE_BULGE_COUNT = 3
-local STRUGGLE_SWITCH_MIN = 0.4
-local STRUGGLE_SWITCH_MAX = 1.2
+local STRUGGLE_SWITCH_MIN, STRUGGLE_SWITCH_MAX = 0.4, 1.2
 local STRUGGLE_BULGE_SCALE = 1.35
 local STRUGGLE_WOBBLE = 0.06
 local STRUGGLE_SMOOTH = 8
 
 local VIOLENT_BULGE_COUNT = 6
-local VIOLENT_SWITCH_MIN = 0.1
-local VIOLENT_SWITCH_MAX = 0.35
+local VIOLENT_SWITCH_MIN, VIOLENT_SWITCH_MAX = 0.1, 0.35
 local VIOLENT_BULGE_SCALE = 2.0
 local VIOLENT_WOBBLE = 0.18
 local VIOLENT_AMP_MULT = 2.0
-local VIOLENT_FART_MIN = 1.5
-local VIOLENT_FART_MAX = 4.5
+local VIOLENT_FART_MIN, VIOLENT_FART_MAX = 1.5, 4.5
 
-local CHEST_DEFAULT_OFFSET_X = 0.42
-local CHEST_DEFAULT_OFFSET_Y = 0.50
-local CHEST_DEFAULT_OFFSET_Z = -0.55
-local BUTT_DEFAULT_OFFSET_X = 0.38
-local BUTT_DEFAULT_OFFSET_Y = -0.35
-local BUTT_DEFAULT_OFFSET_Z = 0.45
+local CHEST_DEFAULT_OFFSET_X, CHEST_DEFAULT_OFFSET_Y, CHEST_DEFAULT_OFFSET_Z = 0.42, 0.50, -0.55
+local BUTT_DEFAULT_OFFSET_X, BUTT_DEFAULT_OFFSET_Y, BUTT_DEFAULT_OFFSET_Z = 0.38, -0.35, 0.45
 
 local JIGGLE_SMOOTH = 9
 local JIGGLE_SPEED_FACTOR = 0.018
@@ -67,23 +57,22 @@ local DIGEST_SHRINK_TIME = 3
 local DIGEST_KEEP_SCALE = 0.15
 local FART_PARTICLES = 24
 local FART_COLOR = Color3.fromRGB(100, 120, 20)
-
 local EAT_FLY_TIME = 0.6
 local EAT_SWALLOW_TIME = 0.55
 
--- 吃东西模式参数
-local FOOD_MAX              = 100
-local FOOD_DECAY_PER_SEC    = 2
-local FOOD_START_LEVEL      = 30
-local FOOD_BURGER_RESTORE   = 25
-local FOOD_FART_INTERVAL    = 2.0
-local FOOD_FART_JITTER      = 2.0
-local FOOD_BURGER_COOLDOWN  = 10    -- 【新】汉堡 CD 10 秒
-local FOOD_BURGER_FART_DELAY = 3    -- 【新】吃后 3 秒放屁
+-- 吃东西模式
+local FOOD_MAX = 100
+local FOOD_DECAY_PER_SEC = 2
+local FOOD_START_LEVEL = 30
+local FOOD_BURGER_RESTORE = 25
+local FOOD_FART_INTERVAL = 2.0
+local FOOD_FART_JITTER = 2.0
+local FOOD_BURGER_COOLDOWN = 10     -- 汉堡 CD
+local FOOD_BURGER_FART_DELAY = 3    -- 吃后 3 秒放屁
 
 local SETTINGS_FILE = "belly_settings.json"
 
--- ================= 状态 =================
+-- ================= forward decls =================
 local belly, bellyWeld, navel, navelWeld, torso, rootPart, renderConn
 local isShakingEnabled, shakeThread, isShakingNow = false, nil, false
 local isStrugglingEnabled, struggleThread = false, nil
@@ -115,7 +104,6 @@ local digestVisualScale = 1
 local eatAppearAlpha = 1
 local eatGrowScale = 1
 
--- 吃人
 local eatState = nil
 local eatModeEnabled = false
 local hasEaten = false
@@ -125,12 +113,10 @@ local eatenOriginalTransparency = {}
 local eatenOriginalPivot = nil
 local eatGui = nil
 
--- 同步
 local syncedPlayers = {}
 local syncAllEnabled = false
 local syncSelectedPlayerName = nil
 
--- 吃东西模式
 local isFoodModeEnabled = false
 local foodLevel = 0
 local foodConn = nil
@@ -139,9 +125,21 @@ local foodBarFill = nil
 local foodLevelText = nil
 local burgerSlot = nil
 local lastFoodFartTime = 0
-local burgerCooldown = 0            -- 【新】汉堡剩余 CD 秒
-local burgerCdLabel = nil           -- 【新】CD 文字
-local burgerFartThread = nil        -- 【新】吃后延迟放屁线程
+local burgerCooldown = 0
+local burgerCdLabel = nil
+local burgerFartThread = nil
+
+-- forward function decls
+local applySettings
+local doEat
+local startDigest
+local doFart
+local stopFoodMode
+local updateFoodUI
+local updateBurgerCD
+local startRenderLoop
+local startStruggleLoop
+local stopStruggleLoop
 
 local settings = {
     sizeScale = BASE_SIZE_SCALE,
@@ -167,7 +165,6 @@ local settings = {
     buttUseSkin = true,
     syncAllEnabled = false,
     syncSelectedPlayerName = "",
-    foodModeEnabled = false,
 }
 
 -- ================= 持久化 =================
@@ -201,7 +198,7 @@ local function queueSave()
     task.delay(1, function() saveDebounce = false saveSettings() end)
 end
 
--- ================= 工具 =================
+-- ================= 基础工具 =================
 local function getTorso(character)
     return character:FindFirstChild("Torso") or character:FindFirstChild("UpperTorso")
 end
@@ -257,6 +254,19 @@ local function foodScale()
     return math.clamp(foodLevel / FOOD_MAX, 0, 1)
 end
 
+-- 挣扎随机
+local function randomUnitDir()
+    local theta = math.random() * math.pi * 2
+    local z = math.random() * 2 - 1
+    local r = math.sqrt(math.max(0, 1 - z * z))
+    return Vector3.new(r * math.cos(theta), r * math.sin(theta), z)
+end
+
+local function randomBulgeTarget()
+    local maxS = isViolentMode and VIOLENT_BULGE_SCALE or STRUGGLE_BULGE_SCALE
+    return 1 + math.random() * (maxS - 1)
+end
+
 local function computeStruggleSizeFor(baseX, baseY, baseZ, bulges, amp)
     if not isStrugglingEnabled or not bulges or #bulges == 0 then
         return Vector3.new(baseX, baseY, baseZ)
@@ -306,7 +316,7 @@ local function applyWeld()
     bellyWeld.C0 = computeC0()
 end
 
-function applySettings()
+applySettings = function()
     if not belly then return end
     local c = finalColor()
     belly.Color = c
@@ -316,7 +326,7 @@ function applySettings()
     applyWeld()
 end
 
--- ================= 碰撞挤压 =================
+-- ================= 挤压 =================
 local function computeSqueezeForPart(part, ownerCharacter)
     if not part or not part.Parent or not isBellyCollideEnabled then
         return Vector3.new(1, 1, 1)
@@ -330,9 +340,7 @@ local function computeSqueezeForPart(part, ownerCharacter)
 
     local cf = part.CFrame
     local half = part.Size * 0.5
-    local rx = math.max(half.X, 0.3)
-    local ry = math.max(half.Y, 0.3)
-    local rz = math.max(half.Z, 0.3)
+    local rx, ry, rz = math.max(half.X, 0.3), math.max(half.Y, 0.3), math.max(half.Z, 0.3)
     local PROBE, GAIN = 1.35, 2.4
     local origin = part.Position
 
@@ -345,13 +353,11 @@ local function computeSqueezeForPart(part, ownerCharacter)
     end
 
     local cx = math.max(probe(cf.RightVector, rx), probe(-cf.RightVector, rx))
-    local cy = math.max(probe(cf.UpVector, ry),   probe(-cf.UpVector, ry))
+    local cy = math.max(probe(cf.UpVector, ry), probe(-cf.UpVector, ry))
     local cz = math.max(probe(cf.LookVector, rz), probe(-cf.LookVector, rz))
 
     local amp = settings.squeezeAmp
-    cx = math.clamp(cx * amp, 0, 1)
-    cy = math.clamp(cy * amp, 0, 1)
-    cz = math.clamp(cz * amp, 0, 1)
+    cx, cy, cz = math.clamp(cx * amp, 0, 1), math.clamp(cy * amp, 0, 1), math.clamp(cz * amp, 0, 1)
 
     local SHRINK, BULGE = 0.6, 0.28
     return Vector3.new(
@@ -424,16 +430,11 @@ end
 
 local function updateChestJiggle(dt)
     if not chestL or not chestWeldL or not rootPart then return end
-    local vel = rootPart.AssemblyLinearVelocity
-    local localVel = rootPart.CFrame:VectorToObjectSpace(vel)
+    local localVel = rootPart.CFrame:VectorToObjectSpace(rootPart.AssemblyLinearVelocity)
     local violentMult = isViolentMode and VIOLENT_JIGGLE_MULT or 1.0
     local jiggleAmp = settings.chestJiggle * JIGGLE_SPEED_FACTOR * violentMult
     local breathe = math.sin(tick() * BREATHE_SPEED) * BREATHE_AMP * settings.chestJiggle
-    local target = Vector3.new(
-        -localVel.X * jiggleAmp,
-        -localVel.Y * jiggleAmp * 1.5 + breathe,
-        -localVel.Z * jiggleAmp
-    )
+    local target = Vector3.new(-localVel.X * jiggleAmp, -localVel.Y * jiggleAmp * 1.5 + breathe, -localVel.Z * jiggleAmp)
     chestJiggle = chestJiggle:Lerp(target, math.clamp(dt * JIGGLE_SMOOTH, 0, 1))
     local bx = settings.chestOffsetX + chestJiggle.X
     local by = settings.chestOffsetY + chestJiggle.Y
@@ -501,16 +502,11 @@ end
 
 local function updateButtJiggle(dt)
     if not buttL or not buttWeldL or not rootPart then return end
-    local vel = rootPart.AssemblyLinearVelocity
-    local localVel = rootPart.CFrame:VectorToObjectSpace(vel)
+    local localVel = rootPart.CFrame:VectorToObjectSpace(rootPart.AssemblyLinearVelocity)
     local violentMult = isViolentMode and VIOLENT_JIGGLE_MULT or 1.0
     local jiggleAmp = settings.buttJiggle * JIGGLE_SPEED_FACTOR * violentMult
     local breathe = math.sin(tick() * BREATHE_SPEED) * BREATHE_AMP * settings.buttJiggle
-    local target = Vector3.new(
-        -localVel.X * jiggleAmp,
-        -localVel.Y * jiggleAmp * 1.5 + breathe,
-        -localVel.Z * jiggleAmp
-    )
+    local target = Vector3.new(-localVel.X * jiggleAmp, -localVel.Y * jiggleAmp * 1.5 + breathe, -localVel.Z * jiggleAmp)
     buttJiggle = buttJiggle:Lerp(target, math.clamp(dt * JIGGLE_SMOOTH, 0, 1))
     local bx = settings.buttOffsetX + buttJiggle.X
     local by = settings.buttOffsetY + buttJiggle.Y
@@ -542,7 +538,7 @@ local function getNearestPlayer()
     return best
 end
 
--- ================= 同步 =================
+-- ================= 同步远程玩家 =================
 local function makeRemotePart(name, shape, size, color, character, transparency)
     local p = Instance.new("Part")
     p.Name = name
@@ -575,7 +571,6 @@ local function createRemoteBelly(plr, character)
         pulseScale = 1, pulseTarget = 1,
         eatAppearAlpha = 1, eatGrowScale = 1, digestVisualScale = 1,
         nextStruggleSwitch = tick(), nextPulse = tick(),
-        isRemote = true,
     }
 
     local skinColor = t.Color
@@ -836,7 +831,7 @@ local function updateRemoteBelly(inst, dt)
 end
 
 -- ================= 渲染循环 =================
-local function startRenderLoop()
+startRenderLoop = function()
     if renderConn then renderConn:Disconnect() end
     renderConn = RunService.RenderStepped:Connect(function(dt)
         if not bellyWeld or not belly or not rootPart then
@@ -927,11 +922,7 @@ local function startRenderLoop()
                                 setCharacterTransparency(eatenPlayer.Character, nil)
                             end
                             eatenPlayer = nil
-                            if eatModeEnabled then
-                                eatState = "hunting"
-                            else
-                                eatState = nil
-                            end
+                            if eatModeEnabled then eatState = "hunting" else eatState = nil end
                             eatAppearAlpha = 1
                             eatGrowScale = 1
                             if belly then belly.Transparency = bellyVisibleTarget() end
@@ -964,18 +955,6 @@ local function startPulseLoop()
 end
 
 -- ================= 挣扎 =================
-local function randomUnitDir()
-    local theta = math.random() * math.pi * 2
-    local z = math.random() * 2 - 1
-    local r = math.sqrt(math.max(0, 1 - z * z))
-    return Vector3.new(r * math.cos(theta), r * math.sin(theta), z)
-end
-
-local function randomBulgeTarget()
-    local maxS = isViolentMode and VIOLENT_BULGE_SCALE or STRUGGLE_BULGE_SCALE
-    return 1 + math.random() * (maxS - 1)
-end
-
 local function ensureBulges()
     local target = isViolentMode and VIOLENT_BULGE_COUNT or STRUGGLE_BULGE_COUNT
     while #struggleBulges < target do
@@ -983,7 +962,7 @@ local function ensureBulges()
     end
 end
 
-local function startStruggleLoop()
+startStruggleLoop = function()
     if struggleThread then return end
     struggleThread = task.spawn(function()
         while isStrugglingEnabled do
@@ -1006,7 +985,7 @@ local function startStruggleLoop()
     end)
 end
 
-local function stopStruggleLoop()
+stopStruggleLoop = function()
     isStrugglingEnabled = false
     if struggleThread then task.cancel(struggleThread) struggleThread = nil end
     for _, b in ipairs(struggleBulges) do b.target = 1 b.cur = 1 end
@@ -1161,10 +1140,7 @@ local function playEatAnimation(p)
     local char = p.Character
     local hrp = char:FindFirstChild("HumanoidRootPart")
     local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hrp then
-        hideEatenPlayer(p)
-        return
-    end
+    if not hrp then hideEatenPlayer(p) return end
 
     eatenOriginalTransparency = {}
     eatenOriginalPivot = char:GetPivot()
@@ -1189,8 +1165,7 @@ local function playEatAnimation(p)
         bellyPos = belly.Position
         mouthPos = bellyPos + belly.CFrame.LookVector * (belly.Size.Z * 0.55)
     else
-        bellyPos = hrp.Position
-        mouthPos = hrp.Position
+        bellyPos, mouthPos = hrp.Position, hrp.Position
     end
 
     local startPos = hrp.Position
@@ -1222,14 +1197,11 @@ local function playEatAnimation(p)
         char:PivotTo(CFrame.new(pos))
         local fade = math.clamp(t * 1.25, 0, 1)
         for _, part in ipairs(char:GetDescendants()) do
-            if part:IsA("BasePart") then
-                part.Transparency = fade
-            elseif part:IsA("Decal") or part:IsA("Texture") then
-                part.Transparency = fade
-            end
+            if part:IsA("BasePart") then part.Transparency = fade
+            elseif part:IsA("Decal") or part:IsA("Texture") then part.Transparency = fade end
         end
         eatAppearAlpha = math.clamp(t * 1.6, 0, 1)
-        eatGrowScale   = 0.45 + 0.7 * math.clamp(t * 1.4, 0, 1)
+        eatGrowScale = 0.45 + 0.7 * math.clamp(t * 1.4, 0, 1)
         if belly then belly.Transparency = bellyVisibleTarget() end
         if navel then navel.Transparency = bellyVisibleTarget() end
         task.wait(EAT_SWALLOW_TIME / swallowSteps)
@@ -1255,9 +1227,7 @@ local function restoreEatenPlayer()
         end
         local hum = eatenPlayer.Character:FindFirstChildOfClass("Humanoid")
         if hum then hum.PlatformStand = false end
-        if eatenOriginalPivot then
-            eatenPlayer.Character:PivotTo(eatenOriginalPivot)
-        end
+        if eatenOriginalPivot then eatenPlayer.Character:PivotTo(eatenOriginalPivot) end
     end
     eatenOriginalTransparency = {}
     eatenOriginalPivot = nil
@@ -1287,7 +1257,7 @@ local function showDigestButton()
     end)
 end
 
-function doEat(target)
+doEat = function(target)
     if not target then return end
     hasEaten = true
     digestVisualScale = 1
@@ -1320,7 +1290,7 @@ function doEat(target)
     end
 end
 
-local function doFart()
+doFart = function()
     if not rootPart then return end
     local origin = rootPart.Position + Vector3.new(0, -1.5, 0)
     for i = 1, FART_PARTICLES do
@@ -1359,7 +1329,7 @@ local function doFart()
     end
 end
 
-function startDigest()
+startDigest = function()
     if eatState ~= "digesting-ready" then return end
     eatState = "digesting"
     doFart()
@@ -1381,11 +1351,7 @@ function startDigest()
     restoreEatenPlayer()
     eatenPlayer = nil
 
-    if eatModeEnabled then
-        eatState = "hunting"
-    else
-        eatState = nil
-    end
+    if eatModeEnabled then eatState = "hunting" else eatState = nil end
     if belly then belly.Transparency = bellyVisibleTarget() end
     if navel then navel.Transparency = bellyVisibleTarget() end
 end
@@ -1459,10 +1425,9 @@ local function stopViolentMode()
 end
 
 -- ================= 吃东西模式 =================
-local function updateFoodUI()
+updateFoodUI = function()
     if not foodGui then return end
     local ratio = math.clamp(foodLevel / FOOD_MAX, 0, 1)
-
     if foodBarFill then
         foodBarFill.Size = UDim2.new(1, -6, 0, ratio * 432)
         if ratio < 0.25 then
@@ -1473,14 +1438,12 @@ local function updateFoodUI()
             foodBarFill.BackgroundColor3 = Color3.fromRGB(120, 200, 80)
         end
     end
-
     if foodLevelText then
         foodLevelText.Text = string.format("%d / %d", math.floor(foodLevel + 0.5), FOOD_MAX)
     end
 end
 
--- 【新】更新汉堡 CD 显示
-local function updateBurgerCD()
+updateBurgerCD = function()
     if not burgerSlot then return end
     if burgerCooldown > 0 then
         burgerSlot.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
@@ -1488,7 +1451,6 @@ local function updateBurgerCD()
             burgerCdLabel.Visible = true
             burgerCdLabel.Text = string.format("%.1f", burgerCooldown)
         end
-        -- 汉堡图形变灰
         for _, ch in ipairs(burgerSlot:GetChildren()) do
             if ch:IsA("Frame") then
                 ch.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
@@ -1497,9 +1459,7 @@ local function updateBurgerCD()
     else
         burgerSlot.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
         if burgerCdLabel then burgerCdLabel.Visible = false end
-        -- 恢复汉堡颜色
-        local parts = burgerSlot:GetChildren()
-        for _, ch in ipairs(parts) do
+        for _, ch in ipairs(burgerSlot:GetChildren()) do
             if ch.Name == "TopBun" then ch.BackgroundColor3 = Color3.fromRGB(210, 160, 90)
             elseif ch.Name == "Lettuce" then ch.BackgroundColor3 = Color3.fromRGB(100, 180, 70)
             elseif ch.Name == "Patty" then ch.BackgroundColor3 = Color3.fromRGB(90, 55, 35)
@@ -1517,13 +1477,11 @@ local function startFoodLoop()
         foodLevel = math.max(0, foodLevel - FOOD_DECAY_PER_SEC * dt)
         updateFoodUI()
 
-        -- 【新】汉堡 CD 计时
         if burgerCooldown > 0 then
             burgerCooldown = math.max(0, burgerCooldown - dt)
             updateBurgerCD()
         end
 
-        -- 100% 时偶尔放屁
         if foodLevel >= FOOD_MAX - 0.01 then
             local now = tick()
             if now - lastFoodFartTime > FOOD_FART_INTERVAL + math.random() * FOOD_FART_JITTER then
@@ -1532,12 +1490,9 @@ local function startFoodLoop()
             end
         end
 
-        -- 归零 → 死亡
         if foodLevel <= 0 then
             local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-            if hum and hum.Health > 0 then
-                hum.Health = 0
-            end
+            if hum and hum.Health > 0 then hum.Health = 0 end
             stopFoodMode()
         end
     end)
@@ -1558,7 +1513,7 @@ local function startFoodMode()
     startFoodLoop()
 end
 
-function stopFoodMode()
+stopFoodMode = function()
     if not isFoodModeEnabled then return end
     isFoodModeEnabled = false
     if foodConn then foodConn:Disconnect() foodConn = nil end
@@ -1569,7 +1524,6 @@ function stopFoodMode()
     end
 end
 
--- 【新】吃汉堡逻辑
 local function eatBurger()
     if not isFoodModeEnabled then return end
     if burgerCooldown > 0 then return end
@@ -1577,23 +1531,18 @@ local function eatBurger()
     foodLevel = math.min(FOOD_MAX, foodLevel + FOOD_BURGER_RESTORE)
     updateFoodUI()
 
-    -- 开始 CD
     burgerCooldown = FOOD_BURGER_COOLDOWN
     updateBurgerCD()
 
-    -- 弹跳反馈
     if burgerSlot then
         burgerSlot.Size = UDim2.new(0, 62, 0, 62)
         TweenService:Create(burgerSlot, TweenInfo.new(0.15), { Size = UDim2.new(0, 72, 0, 72) }):Play()
     end
 
-    -- 【新】3 秒后放屁
     if burgerFartThread then task.cancel(burgerFartThread) end
     burgerFartThread = task.spawn(function()
         task.wait(FOOD_BURGER_FART_DELAY)
-        if isFoodModeEnabled then
-            doFart()
-        end
+        if isFoodModeEnabled then doFart() end
         burgerFartThread = nil
     end)
 end
@@ -1610,7 +1559,6 @@ local function buildUI()
     screenGui.ResetOnSpawn = false
     screenGui.Parent = player:WaitForChild("PlayerGui")
 
-    -- ===== 主面板 =====
     local mainFrame = Instance.new("Frame")
     mainFrame.Name = "MainFrame"
     mainFrame.Size = UDim2.new(0, 280, 0, 440)
@@ -1994,12 +1942,11 @@ local function buildUI()
         end
     end)
 
-    -- 吃东西模式
     makeToggle("吃东西模式", false, function(on)
         if on then startFoodMode() else stopFoodMode() end
     end)
 
-    -- ===== 同步功能 =====
+    -- ===== 同步 =====
     makeToggle("同步所有玩家", syncAllEnabled, function(on)
         syncAllEnabled = on
         settings.syncAllEnabled = on
@@ -2165,7 +2112,6 @@ local function buildUI()
 
     -- ===== 关闭肚子 =====
     local closeBellyBtn = Instance.new("TextButton")
-    closeBellyBtn.Name = "CloseBellyBtn"
     closeBellyBtn.Size = UDim2.new(1, -10, 0, 32)
     closeBellyBtn.BackgroundColor3 = Color3.fromRGB(90, 90, 100)
     closeBellyBtn.BorderSizePixel = 0
@@ -2314,7 +2260,6 @@ local function buildUI()
     levelText.Parent = barBg
     foodLevelText = levelText
 
-    -- 汉堡物品栏槽
     local slot = Instance.new("TextButton")
     slot.Name = "BurgerSlot"
     slot.Size = UDim2.new(0, 72, 0, 72)
@@ -2337,7 +2282,6 @@ local function buildUI()
     slotStroke.Thickness = 2
     slotStroke.Parent = slot
 
-    -- 汉堡图形（命名便于 CD 变灰）
     local topBun = Instance.new("Frame")
     topBun.Name = "TopBun"
     topBun.Size = UDim2.new(0, 48, 0, 16)
@@ -2382,7 +2326,6 @@ local function buildUI()
     c4.CornerRadius = UDim.new(0, 4)
     c4.Parent = bottomBun
 
-    -- 【新】CD 文字
     local cdLabel = Instance.new("TextLabel")
     cdLabel.Name = "CdLabel"
     cdLabel.Size = UDim2.new(1, 0, 1, 0)
