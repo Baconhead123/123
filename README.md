@@ -5,6 +5,7 @@ local RunService = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 
@@ -73,6 +74,15 @@ local FART_COLOR = Color3.fromRGB(100, 120, 20)
 local EAT_FLY_TIME = 0.6
 local EAT_SWALLOW_TIME = 0.55
 
+-- 【新】摸肚子参数
+local TOUCH_MAX_DENTS       = 4      -- 最多同时存在的凹陷
+local TOUCH_DENT_DECAY      = 1.6    -- 每秒衰减速度（1 → 0）
+local TOUCH_DENT_HOLD       = 0.05   -- 每次尝试间隔（按住时）
+local TOUCH_DENT_SIZE_RATIO = 0.14   -- 凹陷球直径 / 肚子最小边
+local TOUCH_DENT_DARKEN     = 0.45   -- 凹陷球比肚子暗多少
+local TOUCH_FART_CHANCE     = 0.15   -- 每次"新触摸"触发放屁概率
+local TOUCH_FART_COOLDOWN   = 1.5    -- 放屁最小间隔
+
 local SETTINGS_FILE = "belly_settings.json"
 
 -- ================= 状态 =================
@@ -98,8 +108,8 @@ local buttL, buttR, buttWeldL, buttWeldR
 local buttJiggle = Vector3.new(0, 0, 0)
 
 local isBellyHidden = false
-local isBellyCollideEnabled = false        -- 挤压检测开关
-local isBellyPhysicalCollide = false       -- 【新】肚子实体碰撞 CanCollide
+local isBellyCollideEnabled = false
+local isBellyPhysicalCollide = false
 local bellySqueeze = Vector3.new(1, 1, 1)
 local bellySqueezeTarget = Vector3.new(1, 1, 1)
 
@@ -117,10 +127,17 @@ local eatenOriginalTransparency = {}
 local eatenOriginalPivot = nil
 local eatGui = nil
 
--- 【新】同步状态
-local syncedPlayers = {}          -- [player] = inst 表
+-- 同步
+local syncedPlayers = {}
 local syncAllEnabled = false
 local syncSelectedPlayerName = nil
+
+-- 【新】摸肚子模式
+local isTouchModeEnabled = false
+local touchDents = {}            -- {dir=Vector3(localUnit), life=1..0, strength=1..0}
+local touchDentParts = {}        -- 池化部件
+local lastTouchTryTime = 0
+local lastTouchFartTime = 0
 
 local settings = {
     sizeScale = BASE_SIZE_SCALE,
@@ -150,9 +167,9 @@ local settings = {
     buttColorR = 255, buttColorG = 200, buttColorB = 180,
     buttUseSkin = true,
 
-    -- 【新】同步设置也持久化
     syncAllEnabled = false,
     syncSelectedPlayerName = "",
+    touchModeEnabled = false,
 }
 
 -- ================= 持久化 =================
@@ -177,6 +194,7 @@ local function loadSettings()
     if settings.syncSelectedPlayerName and settings.syncSelectedPlayerName ~= "" then
         syncSelectedPlayerName = settings.syncSelectedPlayerName
     end
+    isTouchModeEnabled = settings.touchModeEnabled or false
 end
 
 local saveDebounce = false
@@ -232,13 +250,11 @@ local function bellyVisibleTarget()
     return base
 end
 
--- 【新】远程玩家用：只受"关闭肚子"影响
 local function remoteVisibleTarget()
     if isBellyHidden then return 1 end
     return 0.05
 end
 
--- 【参数化】让本地和远程都能用
 local function computeStruggleSizeFor(baseX, baseY, baseZ, bulges, amp)
     if not isStrugglingEnabled or not bulges or #bulges == 0 then
         return Vector3.new(baseX, baseY, baseZ)
@@ -298,7 +314,7 @@ function applySettings()
     applyWeld()
 end
 
--- ================= 碰撞挤压（参数化） =================
+-- ================= 碰撞挤压 =================
 local function computeSqueezeForPart(part, ownerCharacter)
     if not part or not part.Parent or not isBellyCollideEnabled then
         return Vector3.new(1, 1, 1)
@@ -351,6 +367,145 @@ end
 
 local function computeBellySqueeze()
     return computeSqueezeForPart(belly, player.Character)
+end
+
+-- ================= 【新】摸肚子系统 =================
+local function ensureDentParts()
+    while #touchDentParts < TOUCH_MAX_DENTS do
+        local p = Instance.new("Part")
+        p.Name = "BellyTouchDent"
+        p.Shape = Enum.PartType.Ball
+        p.Material = Enum.Material.SmoothPlastic
+        p.CanCollide = false
+        p.CanQuery = false
+        p.CanTouch = false
+        p.Massless = true
+        p.Anchored = true
+        p.Transparency = 1
+        p.Parent = Workspace
+        table.insert(touchDentParts, p)
+    end
+end
+
+local function clearDents()
+    for _, p in ipairs(touchDentParts) do
+        if p and p.Parent then
+            p.Transparency = 1
+        end
+    end
+    touchDents = {}
+end
+
+local function destroyDentParts()
+    for _, p in ipairs(touchDentParts) do
+        pcall(function() p:Destroy() end)
+    end
+    touchDentParts = {}
+    touchDents = {}
+end
+
+-- 处理一次"触摸"（鼠标射线打到肚子上就调用）
+local function tryTouchBelly()
+    if not isTouchModeEnabled then return end
+    if not belly or not belly.Parent then return end
+    if belly.Transparency > 0.9 then return end
+    if not Workspace.CurrentCamera then return end
+
+    local mouse = player:GetMouse()
+    local ray = Workspace.CurrentCamera:ViewportPointToRay(mouse.X, mouse.Y)
+
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Include
+    params.FilterDescendantsInstances = {belly}
+    params.IgnoreWater = true
+
+    local result = Workspace:Raycast(ray.Origin, ray.Direction * 200, params)
+    if not result then return end
+
+    local worldDir = result.Position - belly.Position
+    if worldDir.Magnitude < 0.01 then return end
+    local localDir = belly.CFrame:VectorToObjectSpace(worldDir.Unit)
+
+    -- 若附近已有凹痕就"刷新"它，否则新建
+    local found = false
+    for _, d in ipairs(touchDents) do
+        if d.dir:Dot(localDir) > 0.85 then
+            d.life = 1
+            d.strength = 1
+            found = true
+            break
+        end
+    end
+
+    if not found then
+        table.insert(touchDents, { dir = localDir, life = 1, strength = 1 })
+        while #touchDents > TOUCH_MAX_DENTS do
+            table.remove(touchDents, 1)
+        end
+
+        -- 【新】只有"新触摸"才可能放屁
+        local now = tick()
+        if now - lastTouchFartTime > TOUCH_FART_COOLDOWN and math.random() < TOUCH_FART_CHANCE then
+            lastTouchFartTime = now
+            doFart()
+        end
+    end
+end
+
+-- 每帧更新凹痕的位置/大小/颜色
+local function updateTouchDents(dt)
+    if not belly or not belly.Parent then return end
+
+    -- 衰减
+    for i = #touchDents, 1, -1 do
+        local d = touchDents[i]
+        d.life = d.life - dt * TOUCH_DENT_DECAY
+        if d.life <= 0 then
+            table.remove(touchDents, i)
+        end
+    end
+
+    local sz = math.min(belly.Size.X, belly.Size.Y, belly.Size.Z)
+    local dentRadius = sz * TOUCH_DENT_SIZE_RATIO * 0.5
+    local surfaceDist = sz * 0.5 - dentRadius * 0.9
+    local baseColor = belly.Color:Lerp(Color3.new(0, 0, 0), TOUCH_DENT_DARKEN)
+
+    for i, part in ipairs(touchDentParts) do
+        local d = touchDents[i]
+        if d then
+            local worldOffset = belly.CFrame:VectorToWorldSpace(d.dir * surfaceDist)
+            local worldPos = belly.Position + worldOffset
+            local r = dentRadius * (0.6 + d.strength * 0.4)
+            part.CFrame = CFrame.new(worldPos)
+            part.Size = Vector3.new(r * 2, r * 2, r * 2)
+            part.Color = baseColor
+            part.Transparency = 1 - math.clamp(d.life, 0, 1)
+        else
+            if part.Transparency < 1 then
+                part.Transparency = 1
+            end
+        end
+    end
+end
+
+-- 每帧检查是否按住鼠标
+local function handleTouchInput()
+    if not isTouchModeEnabled then
+        -- 关闭时清空凹痕
+        if #touchDents > 0 then clearDents() end
+        return
+    end
+
+    ensureDentParts()
+
+    if not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+        return
+    end
+
+    local now = tick()
+    if now - lastTouchTryTime < TOUCH_DENT_HOLD then return end
+    lastTouchTryTime = now
+    tryTouchBelly()
 end
 
 -- ================= 胸部 =================
@@ -540,7 +695,7 @@ local function getNearestPlayer()
     return best
 end
 
--- ================= 【新】远程玩家同步系统 =================
+-- ================= 同步 =================
 local function makeRemotePart(name, shape, size, color, character, transparency)
     local p = Instance.new("Part")
     p.Name = name
@@ -580,15 +735,13 @@ local function createRemoteBelly(plr, character)
         eatGrowScale = 1,
         digestVisualScale = 1,
         nextStruggleSwitch = tick(),
+        nextPulse = tick(),
         isRemote = true,
     }
 
-    -- 远程玩家颜色 = 他们自己躯干的颜色
     local skinColor = t.Color
-
     local s = settings.sizeScale
 
-    -- 肚子
     inst.belly = makeRemotePart(BELLY_NAME, Enum.PartType.Ball,
         Vector3.new(settings.sizeX * s, settings.sizeY * s, settings.sizeZ * s),
         skinColor, character, 0.05)
@@ -601,7 +754,6 @@ local function createRemoteBelly(plr, character)
     bw.Parent = inst.belly
     inst.bellyWeld = bw
 
-    -- 肚脐
     local minSize = math.min(settings.sizeX, settings.sizeY, settings.sizeZ) * s
     local ns = minSize * NAVEL_SIZE_RATIO
     local r = (settings.sizeZ * s) / 2
@@ -617,7 +769,6 @@ local function createRemoteBelly(plr, character)
     nw.Parent = inst.navel
     inst.navelWeld = nw
 
-    -- 胸部（若已开启）
     if isChestEnabled then
         local cs = settings.chestSize
         local function makeChest(nm, xSign)
@@ -636,7 +787,6 @@ local function createRemoteBelly(plr, character)
         inst.chestJiggle = Vector3.new(0, 0, 0)
     end
 
-    -- 屁股（若已开启）
     if isButtEnabled then
         local bs = settings.buttSize
         local function makeButt(nm, xSign)
@@ -672,7 +822,6 @@ local function destroyRemoteBelly(plr)
     syncedPlayers[plr] = nil
 end
 
--- 判断某个玩家是否应该被同步
 local function shouldSyncPlayer(plr)
     if plr == player then return false end
     if syncAllEnabled then return true end
@@ -682,15 +831,12 @@ local function shouldSyncPlayer(plr)
     return false
 end
 
--- 刷新：连接/断开同步
 local function refreshSyncedPlayers()
-    -- 移除不再需要同步的
     for plr, _ in pairs(syncedPlayers) do
         if not shouldSyncPlayer(plr) or not plr.Character or not plr.Parent then
             destroyRemoteBelly(plr)
         end
     end
-    -- 添加新的
     for _, plr in ipairs(Players:GetPlayers()) do
         if shouldSyncPlayer(plr) and plr.Character then
             local t = getTorso(plr.Character)
@@ -707,7 +853,6 @@ local function updateRemoteBelly(inst, dt)
 
     local rp = inst.rootPart
 
-    -- 走路摆动
     local vel = rp.AssemblyLinearVelocity
     local horizontal = Vector3.new(vel.X, 0, vel.Z)
     local speed = horizontal.Magnitude
@@ -725,7 +870,6 @@ local function updateRemoteBelly(inst, dt)
     end
     inst.walkOffset = inst.walkOffset:Lerp(target, math.clamp(dt * WALK_SMOOTH, 0, 1))
 
-    -- 脉动
     if inst.pulseTarget == nil then inst.pulseTarget = 1 end
     if inst.pulseScale == nil then inst.pulseScale = 1 end
     inst.pulseScale = inst.pulseScale + (inst.pulseTarget - inst.pulseScale) * math.clamp(dt * PULSE_SMOOTH, 0, 1)
@@ -736,7 +880,6 @@ local function updateRemoteBelly(inst, dt)
         inst.pulseTarget = 1 + (math.random() * 2 - 1) * settings.pulseAmp
     end
 
-    -- 挣扎（用时间驱动，避免每个远程玩家一个线程）
     if isStrugglingEnabled then
         if tick() >= (inst.nextStruggleSwitch or 0) then
             local count = isViolentMode and VIOLENT_BULGE_COUNT or STRUGGLE_BULGE_COUNT
@@ -769,13 +912,10 @@ local function updateRemoteBelly(inst, dt)
         end
         inst.struggleWobble = inst.struggleWobble:Lerp(inst.struggleWobbleTarget, sAlpha)
     else
-        if #inst.struggleBulges > 0 then
-            for _, b in ipairs(inst.struggleBulges) do b.target = 1; b.cur = 1 end
-        end
+        for _, b in ipairs(inst.struggleBulges) do b.target = 1; b.cur = 1 end
         inst.struggleWobble = inst.struggleWobble:Lerp(Vector3.new(0,0,0), math.clamp(dt * 4, 0, 1))
     end
 
-    -- 尺寸
     local totalScale = settings.sizeScale * inst.pulseScale * inst.digestVisualScale * inst.eatGrowScale
     local finalSize = computeStruggleSizeFor(
         settings.sizeX * totalScale,
@@ -785,7 +925,6 @@ local function updateRemoteBelly(inst, dt)
         settings.struggleAmp * (isViolentMode and VIOLENT_AMP_MULT or 1.0)
     )
 
-    -- 挤压
     if isBellyCollideEnabled then
         inst.bellySqueezeTarget = computeSqueezeForPart(inst.belly, inst.character)
     else
@@ -799,8 +938,8 @@ local function updateRemoteBelly(inst, dt)
     )
 
     inst.belly.Size = finalSize
+    inst.belly.CanCollide = isBellyPhysicalCollide
 
-    -- 肚脐
     if inst.navel then
         local minSize = math.min(finalSize.X, finalSize.Y, finalSize.Z)
         local ns = minSize * NAVEL_SIZE_RATIO
@@ -813,27 +952,23 @@ local function updateRemoteBelly(inst, dt)
 
     inst.bellyWeld.C0 = instComputeC0(inst)
 
-    -- 透明度
     local vt = remoteVisibleTarget()
     if inst.belly.Transparency ~= vt then inst.belly.Transparency = vt end
     if inst.navel and inst.navel.Transparency ~= vt then inst.navel.Transparency = vt end
 
-    -- 皮肤颜色同步（如果躯干颜色变化）
     if inst.torso and inst.torso.Parent then
         local sc = inst.torso.Color
         if inst.belly.Color ~= sc then inst.belly.Color = sc end
         if inst.navel and inst.navel.Color ~= sc then inst.navel.Color = sc end
     end
 
-    -- 胸部（如开启）
     if inst.chestL and inst.chestWeldL then
         local cs = settings.chestSize
         if inst.chestL.Size.X ~= cs then
             inst.chestL.Size = Vector3.new(cs, cs, cs)
             inst.chestR.Size = Vector3.new(cs, cs, cs)
         end
-        local vel2 = rp.AssemblyLinearVelocity
-        local lv = rp.CFrame:VectorToObjectSpace(vel2)
+        local lv = rp.CFrame:VectorToObjectSpace(rp.AssemblyLinearVelocity)
         local violentMult = isViolentMode and VIOLENT_JIGGLE_MULT or 1.0
         local jiggleAmp = settings.chestJiggle * JIGGLE_SPEED_FACTOR * violentMult
         local breathe = math.sin(tick() * BREATHE_SPEED) * BREATHE_AMP * settings.chestJiggle
@@ -846,15 +981,13 @@ local function updateRemoteBelly(inst, dt)
         if inst.chestWeldR then inst.chestWeldR.C0 = CFrame.new(-bx, by, bz) end
     end
 
-    -- 屁股（如开启）
     if inst.buttL and inst.buttWeldL then
         local bs = settings.buttSize
         if inst.buttL.Size.X ~= bs then
             inst.buttL.Size = Vector3.new(bs, bs, bs)
             inst.buttR.Size = Vector3.new(bs, bs, bs)
         end
-        local vel3 = rp.AssemblyLinearVelocity
-        local lv3 = rp.CFrame:VectorToObjectSpace(vel3)
+        local lv3 = rp.CFrame:VectorToObjectSpace(rp.AssemblyLinearVelocity)
         local violentMult = isViolentMode and VIOLENT_JIGGLE_MULT or 1.0
         local jiggleAmp = settings.buttJiggle * JIGGLE_SPEED_FACTOR * violentMult
         local breathe = math.sin(tick() * BREATHE_SPEED) * BREATHE_AMP * settings.buttJiggle
@@ -872,8 +1005,13 @@ end
 local function startRenderLoop()
     if renderConn then renderConn:Disconnect() end
     renderConn = RunService.RenderStepped:Connect(function(dt)
+        -- 【新】摸肚子输入 & 更新
+        handleTouchInput()
+        if isTouchModeEnabled then
+            updateTouchDents(dt)
+        end
+
         if not bellyWeld or not belly or not rootPart then
-            -- 本地没有肚子，但远程同步仍要更新
             for _, inst in pairs(syncedPlayers) do
                 updateRemoteBelly(inst, dt)
             end
@@ -976,7 +1114,6 @@ local function startRenderLoop()
             end
         end
 
-        -- 【新】更新所有远程玩家的肚子
         for _, inst in pairs(syncedPlayers) do
             updateRemoteBelly(inst, dt)
         end
@@ -1068,6 +1205,8 @@ local function createBelly(character)
     digestVisualScale = 1
     eatAppearAlpha = 1
     eatGrowScale = 1
+    -- 【新】清空凹痕
+    clearDents()
 
     local s = settings.sizeScale
     local c = finalColor()
@@ -1078,7 +1217,8 @@ local function createBelly(character)
     belly.Size = Vector3.new(settings.sizeX * s, settings.sizeY * s, settings.sizeZ * s)
     belly.Color = c
     belly.Material = Enum.Material.SmoothPlastic
-    belly.CanCollide, belly.CanQuery, belly.CanTouch = false, false, false
+    belly.CanCollide = isBellyPhysicalCollide
+    belly.CanQuery, belly.CanTouch = false, false
     belly.Massless = true
     belly.Transparency = bellyVisibleTarget()
     belly.Parent = character
@@ -1580,7 +1720,7 @@ local function buildUI()
     scroll.BackgroundTransparency = 1
     scroll.BorderSizePixel = 0
     scroll.ScrollBarThickness = 4
-    scroll.CanvasSize = UDim2.new(0, 0, 0, 3600)
+    scroll.CanvasSize = UDim2.new(0, 0, 0, 3900)
     scroll.Parent = mainFrame
 
     local layout = Instance.new("UIListLayout")
@@ -1801,7 +1941,6 @@ local function buildUI()
         isChestEnabled = on
         if on then
             if player.Character then createChests(player.Character) end
-            -- 远程同步的玩家也要补胸部
             for plr, inst in pairs(syncedPlayers) do
                 if not inst.chestL and inst.torso then
                     local cs = settings.chestSize
@@ -1889,19 +2028,27 @@ local function buildUI()
         end
     end)
 
-    -- 【新】肚子实体碰撞
     makeToggle("肚子实体碰撞", false, function(on)
         isBellyPhysicalCollide = on
         if belly then belly.CanCollide = on end
-        -- 远程的肚子也跟着一起改
         for _, inst in pairs(syncedPlayers) do
             if inst.belly then inst.belly.CanCollide = on end
         end
     end)
 
-    -- ===== 【新】同步功能 =====
+    -- 【新】摸肚子模式
+    makeToggle("摸肚子模式", isTouchModeEnabled, function(on)
+        isTouchModeEnabled = on
+        settings.touchModeEnabled = on
+        queueSave()
+        if on then
+            ensureDentParts()
+        else
+            clearDents()
+        end
+    end)
 
-    -- 同步所有玩家
+    -- ===== 同步功能 =====
     makeToggle("同步所有玩家", syncAllEnabled, function(on)
         syncAllEnabled = on
         settings.syncAllEnabled = on
@@ -1909,7 +2056,6 @@ local function buildUI()
         refreshSyncedPlayers()
     end)
 
-    -- 选择要同步的玩家按钮
     local selectPlayerBtn = Instance.new("TextButton")
     selectPlayerBtn.Name = "SelectPlayerBtn"
     selectPlayerBtn.Size = UDim2.new(1, -10, 0, 32)
@@ -1926,7 +2072,6 @@ local function buildUI()
     spc.CornerRadius = UDim.new(0, 4)
     spc.Parent = selectPlayerBtn
 
-    -- 玩家列表弹窗
     local playerListFrame = Instance.new("Frame")
     playerListFrame.Name = "PlayerListFrame"
     playerListFrame.Size = UDim2.new(0, 220, 0, 300)
@@ -1987,7 +2132,6 @@ local function buildUI()
             if ch:IsA("TextButton") then ch:Destroy() end
         end
 
-        -- "无 / 取消选定" 选项
         local noneBtn = Instance.new("TextButton")
         noneBtn.Size = UDim2.new(1, -6, 0, 30)
         noneBtn.BackgroundColor3 = Color3.fromRGB(70, 70, 80)
@@ -2051,7 +2195,6 @@ local function buildUI()
         playerListFrame.Visible = false
     end)
 
-    -- 手动刷新按钮
     local refreshBtn = Instance.new("TextButton")
     refreshBtn.Size = UDim2.new(1, -10, 0, 28)
     refreshBtn.BackgroundColor3 = Color3.fromRGB(70, 90, 130)
@@ -2097,7 +2240,6 @@ local function buildUI()
         end
         if belly then belly.Transparency = bellyVisibleTarget() end
         if navel then navel.Transparency = bellyVisibleTarget() end
-        -- 远程也一起隐藏
         local vt = remoteVisibleTarget()
         for _, inst in pairs(syncedPlayers) do
             if inst.belly then inst.belly.Transparency = vt end
@@ -2152,6 +2294,7 @@ local function buildUI()
         eatAppearAlpha = 1
         eatGrowScale = 1
         pulseTarget = 1
+        clearDents()
         applySettings()
         updateChests()
         updateButts()
@@ -2182,10 +2325,8 @@ player.CharacterAdded:Connect(onCharacterAdded)
 
 buildUI()
 
--- 【新】远程玩家生命周期
 local function onPlayerAdded(plr)
     if plr == player then return end
-    -- 等他们角色出现
     local function bind(char)
         task.wait(0.5)
         if shouldSyncPlayer(plr) then
@@ -2209,7 +2350,6 @@ local function onPlayerAdded(plr)
         destroyRemoteBelly(plr)
     end)
     plr.CharacterAdded:Connect(function()
-        -- 角色重生后延迟再次检查
         task.delay(1.5, refreshSyncedPlayers)
     end)
 end
@@ -2223,7 +2363,6 @@ Players.PlayerRemoving:Connect(function(plr)
     destroyRemoteBelly(plr)
 end)
 
--- 定期刷新，兜底处理未追踪的情况
 task.spawn(function()
     while true do
         task.wait(3)
@@ -2239,5 +2378,10 @@ player.CharacterRemoving:Connect(function()
     destroyBelly()
     destroyChests()
     destroyButts()
-    -- 本地重生时，远程同步保持不变
+    clearDents()
+end)
+
+-- 【新】脚本卸载时清理
+game:BindToClose(function()
+    destroyDentParts()
 end)
