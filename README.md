@@ -71,23 +71,15 @@ local FART_COLOR = Color3.fromRGB(100, 120, 20)
 local EAT_FLY_TIME = 0.6
 local EAT_SWALLOW_TIME = 0.55
 
--- 摸肚子参数
-local TOUCH_MAX_DENTS       = 4
-local TOUCH_DENT_DECAY      = 1.6
-local TOUCH_DENT_HOLD       = 0.05
-local TOUCH_DENT_SIZE_RATIO = 0.14
-local TOUCH_DENT_DARKEN     = 0.45
-local TOUCH_FART_CHANCE     = 0.15
-local TOUCH_FART_COOLDOWN   = 1.5
-local TOUCH_PANEL_SIZE      = 220
-
--- 【新】吃东西模式参数
+-- 吃东西模式参数
 local FOOD_MAX              = 100
-local FOOD_DECAY_PER_SEC    = 2       -- 每秒减少
-local FOOD_START_LEVEL      = 30      -- 开启时进度条
-local FOOD_BURGER_RESTORE   = 25      -- 吃一个汉堡恢复
-local FOOD_FART_INTERVAL    = 2.0     -- 100% 时放屁最小间隔
-local FOOD_FART_JITTER      = 2.0     -- 额外随机
+local FOOD_DECAY_PER_SEC    = 2
+local FOOD_START_LEVEL      = 30
+local FOOD_BURGER_RESTORE   = 25
+local FOOD_FART_INTERVAL    = 2.0
+local FOOD_FART_JITTER      = 2.0
+local FOOD_BURGER_COOLDOWN  = 10    -- 【新】汉堡 CD 10 秒
+local FOOD_BURGER_FART_DELAY = 3    -- 【新】吃后 3 秒放屁
 
 local SETTINGS_FILE = "belly_settings.json"
 
@@ -138,16 +130,7 @@ local syncedPlayers = {}
 local syncAllEnabled = false
 local syncSelectedPlayerName = nil
 
--- 摸肚子
-local isTouchModeEnabled = false
-local touchDents = {}
-local touchDentParts = {}
-local lastTouchTryTime = 0
-local lastTouchFartTime = 0
-local touchPanel, touchPanelKnob = nil, nil
-local isPanelDragging = false
-
--- 【新】吃东西模式
+-- 吃东西模式
 local isFoodModeEnabled = false
 local foodLevel = 0
 local foodConn = nil
@@ -156,6 +139,9 @@ local foodBarFill = nil
 local foodLevelText = nil
 local burgerSlot = nil
 local lastFoodFartTime = 0
+local burgerCooldown = 0            -- 【新】汉堡剩余 CD 秒
+local burgerCdLabel = nil           -- 【新】CD 文字
+local burgerFartThread = nil        -- 【新】吃后延迟放屁线程
 
 local settings = {
     sizeScale = BASE_SIZE_SCALE,
@@ -181,7 +167,6 @@ local settings = {
     buttUseSkin = true,
     syncAllEnabled = false,
     syncSelectedPlayerName = "",
-    touchModeEnabled = false,
     foodModeEnabled = false,
 }
 
@@ -207,7 +192,6 @@ local function loadSettings()
     if settings.syncSelectedPlayerName and settings.syncSelectedPlayerName ~= "" then
         syncSelectedPlayerName = settings.syncSelectedPlayerName
     end
-    isTouchModeEnabled = settings.touchModeEnabled or false
 end
 
 local saveDebounce = false
@@ -268,7 +252,6 @@ local function remoteVisibleTarget()
     return 0.05
 end
 
--- 【新】吃东西模式：进度 / 100 作为肚子缩放比例
 local function foodScale()
     if not isFoodModeEnabled then return 1 end
     return math.clamp(foodLevel / FOOD_MAX, 0, 1)
@@ -380,198 +363,6 @@ end
 
 local function computeBellySqueeze()
     return computeSqueezeForPart(belly, player.Character)
-end
-
--- ================= 摸肚子系统 =================
-local function ensureDentParts()
-    while #touchDentParts < TOUCH_MAX_DENTS do
-        local p = Instance.new("Part")
-        p.Name = "BellyTouchDent"
-        p.Shape = Enum.PartType.Ball
-        p.Material = Enum.Material.SmoothPlastic
-        p.CanCollide, p.CanQuery, p.CanTouch = false, false, false
-        p.Massless = true
-        p.Anchored = true
-        p.Transparency = 1
-        p.Parent = Workspace
-        table.insert(touchDentParts, p)
-    end
-end
-
-local function clearDents()
-    for _, p in ipairs(touchDentParts) do
-        if p and p.Parent then p.Transparency = 1 end
-    end
-    touchDents = {}
-end
-
-local function destroyDentParts()
-    for _, p in ipairs(touchDentParts) do
-        pcall(function() p:Destroy() end)
-    end
-    touchDentParts = {}
-    touchDents = {}
-end
-
-local function removePanelDent()
-    for i = #touchDents, 1, -1 do
-        if touchDents[i].isPanel then table.remove(touchDents, i) end
-    end
-end
-
--- 普通鼠标射线触摸
-local function tryTouchBelly()
-    if not isTouchModeEnabled then return end
-    if not belly or not belly.Parent then return end
-    if belly.Transparency > 0.9 then return end
-    if not Workspace.CurrentCamera then return end
-
-    local mouse = player:GetMouse()
-    local ray = Workspace.CurrentCamera:ViewportPointToRay(mouse.X, mouse.Y)
-
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Include
-    params.FilterDescendantsInstances = {belly}
-    params.IgnoreWater = true
-
-    local result = Workspace:Raycast(ray.Origin, ray.Direction * 200, params)
-    if not result then return end
-
-    local worldDir = result.Position - belly.Position
-    if worldDir.Magnitude < 0.01 then return end
-    local localDir = belly.CFrame:VectorToObjectSpace(worldDir.Unit)
-
-    local found = false
-    for _, d in ipairs(touchDents) do
-        if not d.isPanel and d.dir:Dot(localDir) > 0.85 then
-            d.life = 1
-            d.strength = 1
-            found = true
-            break
-        end
-    end
-
-    if not found then
-        table.insert(touchDents, { dir = localDir, life = 1, strength = 1 })
-        while #touchDents > TOUCH_MAX_DENTS do
-            table.remove(touchDents, 1)
-        end
-        local now = tick()
-        if now - lastTouchFartTime > TOUCH_FART_COOLDOWN and math.random() < TOUCH_FART_CHANCE then
-            lastTouchFartTime = now
-            doFart()
-        end
-    end
-end
-
--- 【新】圆形面板 → 腹部凹陷方向
-local function updatePanelDent()
-    if not isPanelDragging or not touchPanel or not touchPanelKnob then
-        removePanelDent()
-        return
-    end
-    if not belly or not belly.Parent or belly.Transparency > 0.9 then
-        removePanelDent()
-        return
-    end
-
-    local center = touchPanel.AbsolutePosition + touchPanel.AbsoluteSize * 0.5
-    local kp = touchPanelKnob.AbsolutePosition + touchPanelKnob.AbsoluteSize * 0.5
-    local dx = kp.X - center.X
-    local dy = kp.Y - center.Y
-    local maxR = touchPanel.AbsoluteSize.X * 0.5 - 14
-    local nx = math.clamp(dx / maxR, -1, 1)
-    local ny = math.clamp(dy / maxR, -1, 1)
-
-    local r = math.min(1, math.sqrt(nx * nx + ny * ny))
-    local z = math.sqrt(math.max(0, 1 - r * r))
-
-    local localDir = Vector3.new(nx, -ny, z)
-    if localDir.Magnitude < 0.01 then localDir = Vector3.new(0, 0, 1) end
-    localDir = localDir.Unit
-
-    local existing = nil
-    for _, d in ipairs(touchDents) do
-        if d.isPanel then existing = d break end
-    end
-    if not existing then
-        existing = { dir = localDir, life = 1, strength = math.max(0.3, r), isPanel = true }
-        table.insert(touchDents, existing)
-        while #touchDents > TOUCH_MAX_DENTS do
-            table.remove(touchDents, 1)
-        end
-    else
-        existing.dir = localDir
-        existing.life = 1
-        existing.strength = math.max(0.3, r)
-    end
-end
-
-local function updateTouchDents(dt)
-    if not belly or not belly.Parent then return end
-    for i = #touchDents, 1, -1 do
-        local d = touchDents[i]
-        d.life = d.life - dt * TOUCH_DENT_DECAY
-        if d.life <= 0 then table.remove(touchDents, i) end
-    end
-
-    local sz = math.min(belly.Size.X, belly.Size.Y, belly.Size.Z)
-    local dentRadius = sz * TOUCH_DENT_SIZE_RATIO * 0.5
-    local surfaceDist = sz * 0.5 - dentRadius * 0.9
-    local baseColor = belly.Color:Lerp(Color3.new(0, 0, 0), TOUCH_DENT_DARKEN)
-
-    for i, part in ipairs(touchDentParts) do
-        local d = touchDents[i]
-        if d then
-            local worldOffset = belly.CFrame:VectorToWorldSpace(d.dir * surfaceDist)
-            local worldPos = belly.Position + worldOffset
-            local r = dentRadius * (0.6 + d.strength * 0.4)
-            part.CFrame = CFrame.new(worldPos)
-            part.Size = Vector3.new(r * 2, r * 2, r * 2)
-            part.Color = baseColor
-            part.Transparency = 1 - math.clamp(d.life, 0, 1)
-        else
-            if part.Transparency < 1 then part.Transparency = 1 end
-        end
-    end
-end
-
-local function handleTouchInput()
-    if not isTouchModeEnabled then
-        if #touchDents > 0 then clearDents() end
-        return
-    end
-    ensureDentParts()
-
-    -- 圆形面板拖动时不再处理普通射线
-    if isPanelDragging then return end
-
-    if not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then return end
-    local now = tick()
-    if now - lastTouchTryTime < TOUCH_DENT_HOLD then return end
-    lastTouchTryTime = now
-    tryTouchBelly()
-end
-
--- 面板拖动
-local function updateKnobFromPosition(screenPos)
-    if not touchPanel or not touchPanelKnob then return end
-    local center = touchPanel.AbsolutePosition + touchPanel.AbsoluteSize * 0.5
-    local dx = screenPos.X - center.X
-    local dy = screenPos.Y - center.Y
-    local maxR = touchPanel.AbsoluteSize.X * 0.5 - 14
-    local len = math.sqrt(dx * dx + dy * dy)
-    if len > maxR and len > 0 then
-        dx = dx / len * maxR
-        dy = dy / len * maxR
-    end
-    touchPanelKnob.Position = UDim2.new(0.5, dx, 0.5, dy)
-end
-
-local function resetKnob()
-    if touchPanelKnob then
-        touchPanelKnob.Position = UDim2.new(0.5, 0, 0.5, 0)
-    end
 end
 
 -- ================= 胸部 =================
@@ -1048,12 +839,6 @@ end
 local function startRenderLoop()
     if renderConn then renderConn:Disconnect() end
     renderConn = RunService.RenderStepped:Connect(function(dt)
-        handleTouchInput()
-        if isTouchModeEnabled then
-            updatePanelDent()
-            updateTouchDents(dt)
-        end
-
         if not bellyWeld or not belly or not rootPart then
             for _, inst in pairs(syncedPlayers) do
                 updateRemoteBelly(inst, dt)
@@ -1089,7 +874,6 @@ local function startRenderLoop()
             struggleWobble = struggleWobble:Lerp(struggleWobbleTarget, sAlpha)
         end
 
-        -- 【新】加上 foodScale()
         local totalScale = settings.sizeScale * pulseScale * digestVisualScale * eatGrowScale * foodScale()
         local finalSize = computeStruggleSize(
             settings.sizeX * totalScale,
@@ -1249,7 +1033,6 @@ local function createBelly(character)
     digestVisualScale = 1
     eatAppearAlpha = 1
     eatGrowScale = 1
-    clearDents()
 
     local s = settings.sizeScale
     local c = finalColor()
@@ -1675,13 +1458,12 @@ local function stopViolentMode()
     stopStruggleLoop()
 end
 
--- ================= 【新】吃东西模式 =================
+-- ================= 吃东西模式 =================
 local function updateFoodUI()
     if not foodGui then return end
     local ratio = math.clamp(foodLevel / FOOD_MAX, 0, 1)
 
     if foodBarFill then
-        -- 可用高度 = 440 - 8 = 432
         foodBarFill.Size = UDim2.new(1, -6, 0, ratio * 432)
         if ratio < 0.25 then
             foodBarFill.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
@@ -1697,6 +1479,36 @@ local function updateFoodUI()
     end
 end
 
+-- 【新】更新汉堡 CD 显示
+local function updateBurgerCD()
+    if not burgerSlot then return end
+    if burgerCooldown > 0 then
+        burgerSlot.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+        if burgerCdLabel then
+            burgerCdLabel.Visible = true
+            burgerCdLabel.Text = string.format("%.1f", burgerCooldown)
+        end
+        -- 汉堡图形变灰
+        for _, ch in ipairs(burgerSlot:GetChildren()) do
+            if ch:IsA("Frame") then
+                ch.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+            end
+        end
+    else
+        burgerSlot.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+        if burgerCdLabel then burgerCdLabel.Visible = false end
+        -- 恢复汉堡颜色
+        local parts = burgerSlot:GetChildren()
+        for _, ch in ipairs(parts) do
+            if ch.Name == "TopBun" then ch.BackgroundColor3 = Color3.fromRGB(210, 160, 90)
+            elseif ch.Name == "Lettuce" then ch.BackgroundColor3 = Color3.fromRGB(100, 180, 70)
+            elseif ch.Name == "Patty" then ch.BackgroundColor3 = Color3.fromRGB(90, 55, 35)
+            elseif ch.Name == "BottomBun" then ch.BackgroundColor3 = Color3.fromRGB(210, 160, 90)
+            end
+        end
+    end
+end
+
 local function startFoodLoop()
     if foodConn then foodConn:Disconnect() end
     foodConn = RunService.RenderStepped:Connect(function(dt)
@@ -1704,6 +1516,12 @@ local function startFoodLoop()
 
         foodLevel = math.max(0, foodLevel - FOOD_DECAY_PER_SEC * dt)
         updateFoodUI()
+
+        -- 【新】汉堡 CD 计时
+        if burgerCooldown > 0 then
+            burgerCooldown = math.max(0, burgerCooldown - dt)
+            updateBurgerCD()
+        end
 
         -- 100% 时偶尔放屁
         if foodLevel >= FOOD_MAX - 0.01 then
@@ -1729,6 +1547,8 @@ local function startFoodMode()
     if isFoodModeEnabled then return end
     isFoodModeEnabled = true
     foodLevel = FOOD_START_LEVEL
+    burgerCooldown = 0
+    updateBurgerCD()
     if foodGui then
         local bg = foodGui:FindFirstChild("FoodBarBg")
         if bg then bg.Visible = true end
@@ -1749,6 +1569,35 @@ function stopFoodMode()
     end
 end
 
+-- 【新】吃汉堡逻辑
+local function eatBurger()
+    if not isFoodModeEnabled then return end
+    if burgerCooldown > 0 then return end
+
+    foodLevel = math.min(FOOD_MAX, foodLevel + FOOD_BURGER_RESTORE)
+    updateFoodUI()
+
+    -- 开始 CD
+    burgerCooldown = FOOD_BURGER_COOLDOWN
+    updateBurgerCD()
+
+    -- 弹跳反馈
+    if burgerSlot then
+        burgerSlot.Size = UDim2.new(0, 62, 0, 62)
+        TweenService:Create(burgerSlot, TweenInfo.new(0.15), { Size = UDim2.new(0, 72, 0, 72) }):Play()
+    end
+
+    -- 【新】3 秒后放屁
+    if burgerFartThread then task.cancel(burgerFartThread) end
+    burgerFartThread = task.spawn(function()
+        task.wait(FOOD_BURGER_FART_DELAY)
+        if isFoodModeEnabled then
+            doFart()
+        end
+        burgerFartThread = nil
+    end)
+end
+
 -- ================= UI =================
 local function buildUI()
     eatGui = Instance.new("ScreenGui")
@@ -1760,85 +1609,6 @@ local function buildUI()
     screenGui.Name = "BellyControlUI"
     screenGui.ResetOnSpawn = false
     screenGui.Parent = player:WaitForChild("PlayerGui")
-
-    -- ===== 摸肚子圆形面板 =====
-    touchPanel = Instance.new("Frame")
-    touchPanel.Name = "TouchPanel"
-    touchPanel.Size = UDim2.new(0, TOUCH_PANEL_SIZE, 0, TOUCH_PANEL_SIZE)
-    touchPanel.Position = UDim2.new(1, -TOUCH_PANEL_SIZE - 30, 1, -TOUCH_PANEL_SIZE - 30)
-    touchPanel.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
-    touchPanel.BackgroundTransparency = 0.25
-    touchPanel.BorderSizePixel = 0
-    touchPanel.Active = true
-    touchPanel.Visible = false
-    touchPanel.Parent = screenGui
-
-    local tpCorner = Instance.new("UICorner")
-    tpCorner.CornerRadius = UDim.new(1, 0)
-    tpCorner.Parent = touchPanel
-
-    local tpStroke = Instance.new("UIStroke")
-    tpStroke.Color = Color3.fromRGB(120, 160, 220)
-    tpStroke.Thickness = 2
-    tpStroke.Transparency = 0.3
-    tpStroke.Parent = touchPanel
-
-    -- 中心十字
-    local crossH = Instance.new("Frame")
-    crossH.Size = UDim2.new(0, 20, 0, 2)
-    crossH.Position = UDim2.new(0.5, -10, 0.5, -1)
-    crossH.BackgroundColor3 = Color3.fromRGB(180, 180, 200)
-    crossH.BackgroundTransparency = 0.5
-    crossH.BorderSizePixel = 0
-    crossH.Parent = touchPanel
-
-    local crossV = Instance.new("Frame")
-    crossV.Size = UDim2.new(0, 2, 0, 20)
-    crossV.Position = UDim2.new(0.5, -1, 0.5, -10)
-    crossV.BackgroundColor3 = Color3.fromRGB(180, 180, 200)
-    crossV.BackgroundTransparency = 0.5
-    crossV.BorderSizePixel = 0
-    crossV.Parent = touchPanel
-
-    -- 小点
-    touchPanelKnob = Instance.new("Frame")
-    touchPanelKnob.Name = "Knob"
-    touchPanelKnob.Size = UDim2.new(0, 30, 0, 30)
-    touchPanelKnob.AnchorPoint = Vector2.new(0.5, 0.5)
-    touchPanelKnob.Position = UDim2.new(0.5, 0, 0.5, 0)
-    touchPanelKnob.BackgroundColor3 = Color3.fromRGB(255, 180, 100)
-    touchPanelKnob.BorderSizePixel = 0
-    touchPanelKnob.Parent = touchPanel
-
-    local knobCorner = Instance.new("UICorner")
-    knobCorner.CornerRadius = UDim.new(1, 0)
-    knobCorner.Parent = touchPanelKnob
-
-    touchPanel.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-            or input.UserInputType == Enum.UserInputType.Touch then
-            isPanelDragging = true
-            updateKnobFromPosition(input.Position)
-        end
-    end)
-
-    UserInputService.InputChanged:Connect(function(input)
-        if not isPanelDragging then return end
-        if input.UserInputType == Enum.UserInputType.MouseMovement
-            or input.UserInputType == Enum.UserInputType.Touch then
-            updateKnobFromPosition(input.Position)
-        end
-    end)
-
-    UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-            or input.UserInputType == Enum.UserInputType.Touch then
-            if isPanelDragging then
-                isPanelDragging = false
-                resetKnob()
-            end
-        end
-    end)
 
     -- ===== 主面板 =====
     local mainFrame = Instance.new("Frame")
@@ -2224,22 +1994,7 @@ local function buildUI()
         end
     end)
 
-    -- 摸肚子模式
-    makeToggle("摸肚子模式", isTouchModeEnabled, function(on)
-        isTouchModeEnabled = on
-        settings.touchModeEnabled = on
-        queueSave()
-        if touchPanel then touchPanel.Visible = on end
-        if on then
-            ensureDentParts()
-        else
-            clearDents()
-            isPanelDragging = false
-            resetKnob()
-        end
-    end)
-
-    -- 【新】吃东西模式
+    -- 吃东西模式
     makeToggle("吃东西模式", false, function(on)
         if on then startFoodMode() else stopFoodMode() end
     end)
@@ -2490,14 +2245,13 @@ local function buildUI()
         eatAppearAlpha = 1
         eatGrowScale = 1
         pulseTarget = 1
-        clearDents()
         applySettings()
         updateChests()
         updateButts()
         saveSettings()
     end)
 
-    -- ===== 【新】吃东西模式 UI =====
+    -- ===== 吃东西模式 UI =====
     local foodGuiRef = Instance.new("ScreenGui")
     foodGuiRef.Name = "BellyFoodUI"
     foodGuiRef.ResetOnSpawn = false
@@ -2523,7 +2277,6 @@ local function buildUI()
     bgStroke.Thickness = 2
     bgStroke.Parent = barBg
 
-    -- 填充（底部向上生长）
     local fill = Instance.new("Frame")
     fill.Name = "Fill"
     fill.AnchorPoint = Vector2.new(0, 1)
@@ -2538,7 +2291,6 @@ local function buildUI()
     fillCorner.CornerRadius = UDim.new(0, 4)
     fillCorner.Parent = fill
 
-    -- 分割线（19 条）
     for k = 1, 19 do
         local line = Instance.new("Frame")
         line.Name = "Line" .. k
@@ -2585,8 +2337,9 @@ local function buildUI()
     slotStroke.Thickness = 2
     slotStroke.Parent = slot
 
-    -- 汉堡图形
+    -- 汉堡图形（命名便于 CD 变灰）
     local topBun = Instance.new("Frame")
+    topBun.Name = "TopBun"
     topBun.Size = UDim2.new(0, 48, 0, 16)
     topBun.Position = UDim2.new(0.5, -24, 0, 12)
     topBun.BackgroundColor3 = Color3.fromRGB(210, 160, 90)
@@ -2597,6 +2350,7 @@ local function buildUI()
     c1.Parent = topBun
 
     local lettuce = Instance.new("Frame")
+    lettuce.Name = "Lettuce"
     lettuce.Size = UDim2.new(0, 54, 0, 6)
     lettuce.Position = UDim2.new(0.5, -27, 0, 28)
     lettuce.BackgroundColor3 = Color3.fromRGB(100, 180, 70)
@@ -2607,6 +2361,7 @@ local function buildUI()
     c2.Parent = lettuce
 
     local patty = Instance.new("Frame")
+    patty.Name = "Patty"
     patty.Size = UDim2.new(0, 52, 0, 12)
     patty.Position = UDim2.new(0.5, -26, 0, 34)
     patty.BackgroundColor3 = Color3.fromRGB(90, 55, 35)
@@ -2617,6 +2372,7 @@ local function buildUI()
     c3.Parent = patty
 
     local bottomBun = Instance.new("Frame")
+    bottomBun.Name = "BottomBun"
     bottomBun.Size = UDim2.new(0, 48, 0, 14)
     bottomBun.Position = UDim2.new(0.5, -24, 0, 46)
     bottomBun.BackgroundColor3 = Color3.fromRGB(210, 160, 90)
@@ -2626,15 +2382,22 @@ local function buildUI()
     c4.CornerRadius = UDim.new(0, 4)
     c4.Parent = bottomBun
 
-    slot.MouseButton1Click:Connect(function()
-        if not isFoodModeEnabled then return end
-        foodLevel = math.min(FOOD_MAX, foodLevel + FOOD_BURGER_RESTORE)
-        updateFoodUI()
-        -- 小弹跳反馈
-        local orig = slot.Size
-        slot.Size = UDim2.new(0, 62, 0, 62)
-        TweenService:Create(slot, TweenInfo.new(0.15), { Size = UDim2.new(0, 72, 0, 72) }):Play()
-    end)
+    -- 【新】CD 文字
+    local cdLabel = Instance.new("TextLabel")
+    cdLabel.Name = "CdLabel"
+    cdLabel.Size = UDim2.new(1, 0, 1, 0)
+    cdLabel.BackgroundTransparency = 1
+    cdLabel.Text = "10.0"
+    cdLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    cdLabel.Font = Enum.Font.GothamBold
+    cdLabel.TextSize = 26
+    cdLabel.TextStrokeTransparency = 0.3
+    cdLabel.Visible = false
+    cdLabel.ZIndex = 5
+    cdLabel.Parent = slot
+    burgerCdLabel = cdLabel
+
+    slot.MouseButton1Click:Connect(eatBurger)
 end
 
 -- ================= 生命周期 =================
@@ -2652,7 +2415,6 @@ local function onCharacterAdded(character)
     if isChestEnabled then createChests(character) end
     if isButtEnabled then createButts(character) end
 
-    -- 【新】重生后如果吃东西模式还开着，重置进度
     if isFoodModeEnabled then
         foodLevel = FOOD_START_LEVEL
         updateFoodUI()
@@ -2665,9 +2427,6 @@ if player.Character then onCharacterAdded(player.Character) end
 player.CharacterAdded:Connect(onCharacterAdded)
 
 buildUI()
-
--- 面板初始可见性
-if touchPanel then touchPanel.Visible = isTouchModeEnabled end
 
 local function onPlayerAdded(plr)
     if plr == player then return end
@@ -2711,9 +2470,4 @@ player.CharacterRemoving:Connect(function()
     destroyBelly()
     destroyChests()
     destroyButts()
-    clearDents()
-end)
-
-game:BindToClose(function()
-    destroyDentParts()
 end)
