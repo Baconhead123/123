@@ -1,4 +1,3 @@
--- 肚子系统 · 客户端脚本
 -- 放置位置：StarterPlayer > StarterPlayerScripts 下的 LocalScript
 
 local Players = game:GetService("Players")
@@ -63,16 +62,16 @@ local EAT_SWALLOW_TIME = 0.55
 -- 吃东西模式
 local FOOD_MAX = 100
 local FOOD_DECAY_PER_SEC = 2
-local FOOD_START_LEVEL = 30
+local FOOD_START_LEVEL = 60         -- 开启时进度条 60
 local FOOD_BURGER_RESTORE = 25
 local FOOD_FART_INTERVAL = 2.0
 local FOOD_FART_JITTER = 2.0
-local FOOD_BURGER_COOLDOWN = 10     -- 汉堡 CD
+local FOOD_BURGER_COOLDOWN = 8      -- 汉堡 CD 8 秒
 local FOOD_BURGER_FART_DELAY = 3    -- 吃后 3 秒放屁
 
 local SETTINGS_FILE = "belly_settings.json"
 
--- ================= forward decls =================
+-- ================= 状态 =================
 local belly, bellyWeld, navel, navelWeld, torso, rootPart, renderConn
 local isShakingEnabled, shakeThread, isShakingNow = false, nil, false
 local isStrugglingEnabled, struggleThread = false, nil
@@ -2330,7 +2329,7 @@ local function buildUI()
     cdLabel.Name = "CdLabel"
     cdLabel.Size = UDim2.new(1, 0, 1, 0)
     cdLabel.BackgroundTransparency = 1
-    cdLabel.Text = "10.0"
+    cdLabel.Text = "8.0"
     cdLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
     cdLabel.Font = Enum.Font.GothamBold
     cdLabel.TextSize = 26
