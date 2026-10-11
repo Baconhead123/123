@@ -62,12 +62,22 @@ local EAT_SWALLOW_TIME = 0.55
 -- 吃东西模式
 local FOOD_MAX = 100
 local FOOD_DECAY_PER_SEC = 2
-local FOOD_START_LEVEL = 60         -- 开启时进度条 60
+local FOOD_START_LEVEL = 60
 local FOOD_BURGER_RESTORE = 25
 local FOOD_FART_INTERVAL = 2.0
 local FOOD_FART_JITTER = 2.0
-local FOOD_BURGER_COOLDOWN = 8      -- 汉堡 CD 8 秒
-local FOOD_BURGER_FART_DELAY = 3    -- 吃后 3 秒放屁
+local FOOD_BURGER_COOLDOWN = 8
+local FOOD_BURGER_FART_DELAY = 3
+
+-- 换装模式
+local AVATAR_IDS = {
+    Head1 = 13515459109,
+    Head2 = 11269691136,
+    Neck  = 18322309584,
+    Torso = 48474356,
+    Shirt = 18836704512,
+    Pants = 13840357309,
+}
 
 local SETTINGS_FILE = "belly_settings.json"
 
@@ -128,7 +138,11 @@ local burgerCooldown = 0
 local burgerCdLabel = nil
 local burgerFartThread = nil
 
--- forward function decls
+-- 换装
+local isAvatarSkinEnabled = false
+local savedOriginalDescription = nil
+
+-- forward decls
 local applySettings
 local doEat
 local startDigest
@@ -139,6 +153,7 @@ local updateBurgerCD
 local startRenderLoop
 local startStruggleLoop
 local stopStruggleLoop
+local createBelly
 
 local settings = {
     sizeScale = BASE_SIZE_SCALE,
@@ -164,6 +179,7 @@ local settings = {
     buttUseSkin = true,
     syncAllEnabled = false,
     syncSelectedPlayerName = "",
+    avatarSkinEnabled = false,
 }
 
 -- ================= 持久化 =================
@@ -188,6 +204,7 @@ local function loadSettings()
     if settings.syncSelectedPlayerName and settings.syncSelectedPlayerName ~= "" then
         syncSelectedPlayerName = settings.syncSelectedPlayerName
     end
+    isAvatarSkinEnabled = settings.avatarSkinEnabled or false
 end
 
 local saveDebounce = false
@@ -253,7 +270,6 @@ local function foodScale()
     return math.clamp(foodLevel / FOOD_MAX, 0, 1)
 end
 
--- 挣扎随机
 local function randomUnitDir()
     local theta = math.random() * math.pi * 2
     local z = math.random() * 2 - 1
@@ -368,6 +384,218 @@ end
 
 local function computeBellySqueeze()
     return computeSqueezeForPart(belly, player.Character)
+end
+
+-- ================= 换装系统 =================
+local function loadAsset(id)
+    local success, object = pcall(function()
+        return game:GetObjects("rbxassetid://" .. tostring(id))[1]
+    end)
+    if not success or not object then
+        warn("[Avatar] 加载失败:", id)
+        return nil
+    end
+    return object
+end
+
+local function findHandle(object)
+    if not object then return nil end
+    if object:IsA("BasePart") and object.Name == "Handle" then return object end
+    local handle = object:FindFirstChild("Handle", true)
+    if handle and handle:IsA("BasePart") then return handle end
+    return nil
+end
+
+local function findAccessoryAttachment(handle)
+    if not handle then return nil end
+    for _, child in ipairs(handle:GetChildren()) do
+        if child:IsA("Attachment") then return child end
+    end
+    return nil
+end
+
+local function findCharacterAttachment(character, name)
+    if not character then return nil end
+    for _, object in ipairs(character:GetDescendants()) do
+        if object:IsA("Attachment") and object.Name == name then
+            return object
+        end
+    end
+    return nil
+end
+
+local function getFallbackPart(character, head, name)
+    local n = string.lower(name or "")
+    if n:find("face") or n:find("front") or n:find("hair")
+        or n:find("hat") or n:find("head")
+        or n:find("eye") or n:find("mouth") then
+        return head
+    end
+    if n:find("neck") then
+        return character:FindFirstChild("UpperTorso")
+            or character:FindFirstChild("Torso")
+            or head
+    end
+    if n:find("waist") or n:find("body") or n:find("torso") then
+        return character:FindFirstChild("UpperTorso")
+            or character:FindFirstChild("Torso")
+            or head
+    end
+    return head
+end
+
+local function attachAccessory(character, head, object)
+    if not object then return end
+    local handle = findHandle(object)
+    if not handle then
+        object:Destroy()
+        return
+    end
+
+    local accessoryAttachment = findAccessoryAttachment(handle)
+
+    if not accessoryAttachment then
+        object.Parent = character
+        handle.CFrame = head.CFrame * CFrame.new(0, 0.5, 0)
+        local weld = Instance.new("WeldConstraint")
+        weld.Name = "ClientAccessoryWeld"
+        weld.Part0 = head
+        weld.Part1 = handle
+        weld.Parent = handle
+        handle.CanCollide, handle.CanTouch, handle.CanQuery, handle.Massless = false, false, false, true
+        return object
+    end
+
+    local attachmentName = accessoryAttachment.Name
+    local characterAttachment = findCharacterAttachment(character, attachmentName)
+    object.Parent = character
+
+    if characterAttachment then
+        local targetPart = characterAttachment.Parent
+        if targetPart and targetPart:IsA("BasePart") then
+            local accessoryWorld = handle.CFrame * accessoryAttachment.CFrame
+            local targetWorld = characterAttachment.WorldCFrame
+            local correction = targetWorld * accessoryWorld:Inverse()
+            handle.CFrame = correction * handle.CFrame
+
+            local weld = Instance.new("WeldConstraint")
+            weld.Name = "ClientAccessoryWeld"
+            weld.Part0 = targetPart
+            weld.Part1 = handle
+            weld.Parent = handle
+            handle.CanCollide, handle.CanTouch, handle.CanQuery, handle.Massless = false, false, false, true
+            return object
+        end
+    end
+
+    local fallback = getFallbackPart(character, head, attachmentName)
+    if not fallback then
+        object:Destroy()
+        return
+    end
+
+    handle.CFrame = fallback.CFrame * CFrame.new(0, 0.5, 0)
+    local weld = Instance.new("WeldConstraint")
+    weld.Name = "ClientAccessoryWeld"
+    weld.Part0 = fallback
+    weld.Part1 = handle
+    weld.Parent = handle
+    handle.CanCollide, handle.CanTouch, handle.CanQuery, handle.Massless = false, false, false, true
+    return object
+end
+
+local function addAccessory(character, head, id)
+    local object = loadAsset(id)
+    if not object then return end
+    attachAccessory(character, head, object)
+end
+
+local function clearAvatarParts(character)
+    if not character then return end
+    for _, obj in ipairs(character:GetChildren()) do
+        local n = obj.Name
+        if n == "ClientShirt" or n == "ClientPants"
+            or n == "ClientAvatarAccessory"
+            or n == "ClientAvatarHead1"
+            or n == "ClientAvatarHead2"
+            or n == "ClientAvatarNeck" then
+            obj:Destroy()
+        end
+    end
+    for _, obj in ipairs(character:GetChildren()) do
+        if obj:IsA("Accessory") and obj:FindFirstChild("Handle") then
+            local hasWeld = obj.Handle:FindFirstChild("ClientAccessoryWeld")
+            if hasWeld then obj:Destroy() end
+        end
+    end
+end
+
+local function applyAvatarSkin(character)
+    if not character then return end
+    local hum = character:FindFirstChildOfClass("Humanoid")
+    local head = character:FindFirstChild("Head")
+    if not hum or not head then return end
+
+    if not savedOriginalDescription then
+        local ok, desc = pcall(function()
+            return hum:GetAppliedDescription()
+        end)
+        if ok then savedOriginalDescription = desc end
+    end
+
+    local ok2, desc2 = pcall(function()
+        return hum:GetAppliedDescription()
+    end)
+    if ok2 and desc2 then
+        desc2.Torso = AVATAR_IDS.Torso
+        pcall(function()
+            hum:ApplyDescription(desc2)
+        end)
+        task.wait(0.8)
+    end
+
+    head = character:FindFirstChild("Head")
+    if not head then return end
+
+    for _, v in ipairs(character:GetChildren()) do
+        if v:IsA("Shirt") or v:IsA("Pants") or v:IsA("ShirtGraphic") then
+            v:Destroy()
+        end
+    end
+
+    local shirtObj = loadAsset(AVATAR_IDS.Shirt)
+    if shirtObj and shirtObj:IsA("Shirt") then
+        shirtObj.Name = "ClientShirt"
+        shirtObj.Parent = character
+    end
+
+    local pantsObj = loadAsset(AVATAR_IDS.Pants)
+    if pantsObj and pantsObj:IsA("Pants") then
+        pantsObj.Name = "ClientPants"
+        pantsObj.Parent = character
+    end
+
+    task.wait(0.3)
+    head = character:FindFirstChild("Head")
+    if head then
+        addAccessory(character, head, AVATAR_IDS.Head1)
+        addAccessory(character, head, AVATAR_IDS.Head2)
+        addAccessory(character, head, AVATAR_IDS.Neck)
+    end
+end
+
+local function removeAvatarSkin(character)
+    if not character then return end
+    clearAvatarParts(character)
+    if savedOriginalDescription then
+        local hum = character:FindFirstChildOfClass("Humanoid")
+        if hum then
+            pcall(function()
+                hum:ApplyDescription(savedOriginalDescription)
+            end)
+            task.wait(0.8)
+        end
+    end
 end
 
 -- ================= 胸部 =================
@@ -994,7 +1222,7 @@ stopStruggleLoop = function()
 end
 
 -- ================= 创建肚子 =================
-local function createBelly(character)
+createBelly = function(character)
     destroyBelly()
     torso = getTorso(character)
     if not torso then return end
@@ -1632,7 +1860,7 @@ local function buildUI()
     scroll.BackgroundTransparency = 1
     scroll.BorderSizePixel = 0
     scroll.ScrollBarThickness = 4
-    scroll.CanvasSize = UDim2.new(0, 0, 0, 4200)
+    scroll.CanvasSize = UDim2.new(0, 0, 0, 4400)
     scroll.Parent = mainFrame
 
     local layout = Instance.new("UIListLayout")
@@ -1943,6 +2171,32 @@ local function buildUI()
 
     makeToggle("吃东西模式", false, function(on)
         if on then startFoodMode() else stopFoodMode() end
+    end)
+
+    -- 【新】修改玩家外观
+    makeToggle("修改玩家外观", isAvatarSkinEnabled, function(on)
+        isAvatarSkinEnabled = on
+        settings.avatarSkinEnabled = on
+        queueSave()
+
+        local char = player.Character
+        if not char then return end
+
+        task.spawn(function()
+            if on then
+                applyAvatarSkin(char)
+            else
+                removeAvatarSkin(char)
+            end
+
+            task.wait(0.3)
+            -- ApplyDescription 会重建角色，需要重建肚子
+            if getTorso(char) then
+                createBelly(char)
+                if isChestEnabled then createChests(char) end
+                if isButtEnabled then createButts(char) end
+            end
+        end)
     end)
 
     -- ===== 同步 =====
@@ -2352,6 +2606,23 @@ local function onCharacterAdded(character)
         tries = tries + 1
     end
     if not t then return end
+
+    -- 如果开启了换装，先应用换装（会重建角色）
+    if isAvatarSkinEnabled then
+        local done = false
+        task.spawn(function()
+            pcall(function()
+                applyAvatarSkin(character)
+            end)
+            done = true
+        end)
+        local waited = 0
+        while not done and waited < 5 do
+            task.wait(0.1)
+            waited = waited + 0.1
+        end
+    end
+
     task.wait(0.1)
     createBelly(character)
     if isChestEnabled then createChests(character) end
