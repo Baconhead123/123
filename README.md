@@ -142,6 +142,10 @@ local burgerFartThread = nil
 local isAvatarSkinEnabled = false
 local savedOriginalDescription = nil
 
+-- 服装贴图
+local bellyTextureGui, bellyTextureImage
+local navelTextureGui, navelTextureImage
+
 -- forward decls
 local applySettings
 local doEat
@@ -154,6 +158,7 @@ local startRenderLoop
 local startStruggleLoop
 local stopStruggleLoop
 local createBelly
+local updatePartTextureClipped
 
 local settings = {
     sizeScale = BASE_SIZE_SCALE,
@@ -180,6 +185,16 @@ local settings = {
     syncAllEnabled = false,
     syncSelectedPlayerName = "",
     avatarSkinEnabled = false,
+    -- 服装贴图
+    textureEnabled = false,
+    textureSource = "Shirt",
+    textureCustomId = "",
+    textureRectX = 0.27,
+    textureRectY = 0.30,
+    textureRectW = 0.23,
+    textureRectH = 0.25,
+    textureScale = 1.0,
+    textureOpacity = 1.0,
 }
 
 -- ================= 持久化 =================
@@ -219,9 +234,106 @@ local function getTorso(character)
     return character:FindFirstChild("Torso") or character:FindFirstChild("UpperTorso")
 end
 
+-- ================= 服装贴图 =================
+local function getShirtTextureId(character)
+    local shirt = character and character:FindFirstChildOfClass("Shirt")
+    if shirt and shirt.Texture and shirt.Texture ~= "" then return shirt.Texture end
+    return nil
+end
+
+local function getPantsTextureId(character)
+    local pants = character and character:FindFirstChildOfClass("Pants")
+    if pants and pants.Texture and pants.Texture ~= "" then return pants.Texture end
+    return nil
+end
+
+local function resolveTextureId(character)
+    if not settings.textureEnabled then return nil end
+    local src = settings.textureSource
+    if src == "Shirt" then return getShirtTextureId(character)
+    elseif src == "Pants" then return getPantsTextureId(character)
+    elseif src == "Custom" then
+        if settings.textureCustomId ~= "" then return settings.textureCustomId end
+    end
+    return nil
+end
+
+local function createPartTexture(part)
+    if not part then return nil, nil end
+    local gui = Instance.new("BillboardGui")
+    gui.Name = "BellyClothTexture"
+    gui.Adornee = part
+    gui.Size = UDim2.new(0, 128, 0, 128)
+    gui.AlwaysOnTop = false
+    gui.LightInfluence = 0
+    gui.ResetOnSpawn = false
+    gui.MaxDistance = 200
+    gui.Parent = part
+
+    local clip = Instance.new("Frame")
+    clip.Name = "Clip"
+    clip.BackgroundTransparency = 1
+    clip.ClipsDescendants = true
+    clip.Size = UDim2.new(1, 0, 1, 0)
+    clip.Parent = gui
+
+    local img = Instance.new("ImageLabel")
+    img.Name = "ClothImage"
+    img.BackgroundTransparency = 1
+    img.Size = UDim2.new(1, 0, 1, 0)
+    img.ScaleType = Enum.ScaleType.Stretch
+    img.ImageTransparency = 1
+    img.Parent = clip
+    return gui, img
+end
+
+updatePartTextureClipped = function(part, gui, img, character, aspectScale)
+    if not part or not gui or not img then return end
+    local texId = resolveTextureId(character)
+    if not texId then
+        gui.Enabled = false
+        return
+    end
+    gui.Enabled = true
+    gui.Adornee = part
+
+    local sz = part.Size
+    local maxDim = math.max(sz.X, sz.Y, sz.Z)
+    local basePx = maxDim * 64 * settings.textureScale
+    gui.Size = UDim2.new(0, basePx * (aspectScale or 1), 0, basePx)
+
+    if img.Image ~= texId then img.Image = texId end
+
+    local w = math.clamp(settings.textureRectW, 0.01, 1)
+    local h = math.clamp(settings.textureRectH, 0.01, 1)
+    local ox = math.clamp(settings.textureRectX, 0, 1 - w)
+    local oy = math.clamp(settings.textureRectY, 0, 1 - h)
+
+    img.Size = UDim2.new(1 / w, 0, 1 / h, 0)
+    img.Position = UDim2.new(-ox / w, 0, -oy / h, 0)
+    img.ImageTransparency = 1 - math.clamp(settings.textureOpacity, 0, 1)
+end
+
+local function destroyBellyTexture()
+    if bellyTextureGui then bellyTextureGui:Destroy() bellyTextureGui = nil end
+    bellyTextureImage = nil
+    if navelTextureGui then navelTextureGui:Destroy() navelTextureGui = nil end
+    navelTextureImage = nil
+end
+
+local function createBellyTexture(character)
+    destroyBellyTexture()
+    if not belly then return end
+    bellyTextureGui, bellyTextureImage = createPartTexture(belly)
+    if navel then
+        navelTextureGui, navelTextureImage = createPartTexture(navel)
+    end
+end
+
 local function destroyBelly()
     if renderConn then renderConn:Disconnect() renderConn = nil end
     if pulseThread then task.cancel(pulseThread) pulseThread = nil end
+    destroyBellyTexture()
     if navel then navel:Destroy() navel = nil end
     if navelWeld then navelWeld:Destroy() navelWeld = nil end
     if belly then belly:Destroy() belly = nil end
@@ -866,6 +978,11 @@ local function createRemoteBelly(plr, character)
         inst.buttJiggle = Vector3.new(0, 0, 0)
     end
 
+    inst.textureGui, inst.textureImage = createPartTexture(inst.belly)
+    if inst.navel then
+        inst.navelTextureGui, inst.navelTextureImage = createPartTexture(inst.navel)
+    end
+
     syncedPlayers[plr] = inst
 end
 
@@ -876,6 +993,7 @@ local function destroyRemoteBelly(plr)
         "belly", "bellyWeld", "navel", "navelWeld",
         "chestL", "chestR", "chestWeldL", "chestWeldR",
         "buttL", "buttR", "buttWeldL", "buttWeldR",
+        "textureGui", "navelTextureGui",
     }) do
         local obj = inst[key]
         if obj then pcall(function() obj:Destroy() end) end
@@ -1055,6 +1173,13 @@ local function updateRemoteBelly(inst, dt)
         inst.buttWeldL.C0 = CFrame.new(bx, by, bz)
         if inst.buttWeldR then inst.buttWeldR.C0 = CFrame.new(-bx, by, bz) end
     end
+
+    if inst.textureGui and inst.textureImage then
+        updatePartTextureClipped(inst.belly, inst.textureGui, inst.textureImage, inst.character, 1)
+    end
+    if inst.navelTextureGui and inst.navelTextureImage then
+        updatePartTextureClipped(inst.navel, inst.navelTextureGui, inst.navelTextureImage, inst.character, 0.6)
+    end
 end
 
 -- ================= 渲染循环 =================
@@ -1134,6 +1259,13 @@ startRenderLoop = function()
 
         if isChestEnabled then updateChestJiggle(dt) end
         if isButtEnabled then updateButtJiggle(dt) end
+
+        if bellyTextureGui and bellyTextureImage then
+            updatePartTextureClipped(belly, bellyTextureGui, bellyTextureImage, player.Character, 1)
+        end
+        if navelTextureGui and navelTextureImage then
+            updatePartTextureClipped(navel, navelTextureGui, navelTextureImage, player.Character, 0.6)
+        end
 
         if eatState == "hunting" and not isBellyHidden then
             local tgt = getNearestPlayer()
@@ -1285,6 +1417,7 @@ createBelly = function(character)
     navelWeld.Parent = navel
 
     applySettings()
+    createBellyTexture(character)
     startRenderLoop()
     startPulseLoop()
     if isStrugglingEnabled then startStruggleLoop() end
@@ -1860,7 +1993,7 @@ local function buildUI()
     scroll.BackgroundTransparency = 1
     scroll.BorderSizePixel = 0
     scroll.ScrollBarThickness = 4
-    scroll.CanvasSize = UDim2.new(0, 0, 0, 4400)
+    scroll.CanvasSize = UDim2.new(0, 0, 0, 5400)
     scroll.Parent = mainFrame
 
     local layout = Instance.new("UIListLayout")
@@ -2048,6 +2181,51 @@ local function buildUI()
     -- ===== 挤压 =====
     makeSlider("挤压幅度", 0, 2, settings.squeezeAmp, 0.1, function(v) settings.squeezeAmp = v end, Color3.fromRGB(200, 255, 160))
 
+    -- ===== 服装贴图 =====
+    makeToggle("服装贴图", settings.textureEnabled, function(on)
+        settings.textureEnabled = on
+        if belly and player.Character then
+            if on then createBellyTexture(player.Character) else destroyBellyTexture() end
+        end
+        queueSave()
+    end)
+
+    local texSrcBtn = Instance.new("TextButton")
+    texSrcBtn.Size = UDim2.new(1, -10, 0, 30)
+    texSrcBtn.BackgroundColor3 = Color3.fromRGB(80, 120, 200)
+    texSrcBtn.BorderSizePixel = 0
+    texSrcBtn.Text = "贴图来源: " .. settings.textureSource
+    texSrcBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    texSrcBtn.Font = Enum.Font.GothamBold
+    texSrcBtn.TextSize = 13
+    texSrcBtn.LayoutOrder = nextY()
+    texSrcBtn.Parent = scroll
+    local tsc = Instance.new("UICorner")
+    tsc.CornerRadius = UDim.new(0, 4)
+    tsc.Parent = texSrcBtn
+    texSrcBtn.MouseButton1Click:Connect(function()
+        local order = {"Shirt", "Pants", "Custom"}
+        local idx = 1
+        for i, v in ipairs(order) do if v == settings.textureSource then idx = i end end
+        idx = idx % #order + 1
+        settings.textureSource = order[idx]
+        texSrcBtn.Text = "贴图来源: " .. settings.textureSource
+        queueSave()
+    end)
+
+    makeSlider("贴图裁剪 X", 0, 1, settings.textureRectX, 0.01,
+        function(v) settings.textureRectX = v end, Color3.fromRGB(200, 180, 255))
+    makeSlider("贴图裁剪 Y", 0, 1, settings.textureRectY, 0.01,
+        function(v) settings.textureRectY = v end, Color3.fromRGB(200, 180, 255))
+    makeSlider("贴图裁剪 宽", 0.02, 1, settings.textureRectW, 0.01,
+        function(v) settings.textureRectW = v end, Color3.fromRGB(200, 180, 255))
+    makeSlider("贴图裁剪 高", 0.02, 1, settings.textureRectH, 0.01,
+        function(v) settings.textureRectH = v end, Color3.fromRGB(200, 180, 255))
+    makeSlider("贴图大小", 0.2, 3, settings.textureScale, 0.05,
+        function(v) settings.textureScale = v end, Color3.fromRGB(200, 180, 255))
+    makeSlider("贴图不透明度", 0, 1, settings.textureOpacity, 0.05,
+        function(v) settings.textureOpacity = v end, Color3.fromRGB(200, 180, 255))
+
     -- ===== 开关 =====
     makeToggle("抖动效果", false, function(on)
         isShakingEnabled = on
@@ -2173,7 +2351,7 @@ local function buildUI()
         if on then startFoodMode() else stopFoodMode() end
     end)
 
-    -- 【新】修改玩家外观
+    -- 修改玩家外观
     makeToggle("修改玩家外观", isAvatarSkinEnabled, function(on)
         isAvatarSkinEnabled = on
         settings.avatarSkinEnabled = on
@@ -2190,8 +2368,8 @@ local function buildUI()
             end
 
             task.wait(0.3)
-            -- ApplyDescription 会重建角色，需要重建肚子
-            if getTorso(char) then
+            char = player.Character
+            if char and getTorso(char) then
                 createBelly(char)
                 if isChestEnabled then createChests(char) end
                 if isButtEnabled then createButts(char) end
@@ -2439,6 +2617,15 @@ local function buildUI()
         settings.buttOffsetZ = BUTT_DEFAULT_OFFSET_Z
         settings.buttColorR, settings.buttColorG, settings.buttColorB = 255, 200, 180
         settings.buttUseSkin = true
+        settings.textureEnabled = false
+        settings.textureSource = "Shirt"
+        settings.textureCustomId = ""
+        settings.textureRectX = 0.27
+        settings.textureRectY = 0.30
+        settings.textureRectW = 0.23
+        settings.textureRectH = 0.25
+        settings.textureScale = 1.0
+        settings.textureOpacity = 1.0
         hasEaten = false
         digestVisualScale = 1
         eatAppearAlpha = 1
@@ -2447,6 +2634,11 @@ local function buildUI()
         applySettings()
         updateChests()
         updateButts()
+        if settings.textureEnabled then
+            createBellyTexture(player.Character)
+        else
+            destroyBellyTexture()
+        end
         saveSettings()
     end)
 
@@ -2607,7 +2799,6 @@ local function onCharacterAdded(character)
     end
     if not t then return end
 
-    -- 如果开启了换装，先应用换装（会重建角色）
     if isAvatarSkinEnabled then
         local done = false
         task.spawn(function()
@@ -2621,9 +2812,11 @@ local function onCharacterAdded(character)
             task.wait(0.1)
             waited = waited + 0.1
         end
+        character = player.Character
     end
 
     task.wait(0.1)
+    if not character or not getTorso(character) then return end
     createBelly(character)
     if isChestEnabled then createChests(character) end
     if isButtEnabled then createButts(character) end
@@ -2659,7 +2852,10 @@ local function onPlayerAdded(plr)
         end
     end
     if plr.Character then task.spawn(bind, plr.Character) end
-    plr.CharacterAdded:Connect(function(char) task.spawn(bind, char) end)
+    plr.CharacterAdded:Connect(function(char)
+        destroyRemoteBelly(plr)
+        task.spawn(bind, char)
+    end)
     plr.CharacterRemoving:Connect(function() destroyRemoteBelly(plr) end)
     plr.CharacterAdded:Connect(function() task.delay(1.5, refreshSyncedPlayers) end)
 end
