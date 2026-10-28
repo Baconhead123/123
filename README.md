@@ -44,14 +44,6 @@ local VIOLENT_FART_MIN, VIOLENT_FART_MAX = 1.5, 4.5
 local CHEST_DEFAULT_OFFSET_X, CHEST_DEFAULT_OFFSET_Y, CHEST_DEFAULT_OFFSET_Z = 0.42, 0.50, -0.55
 local BUTT_DEFAULT_OFFSET_X, BUTT_DEFAULT_OFFSET_Y, BUTT_DEFAULT_OFFSET_Z = 0.38, -0.35, 0.45
 
-local THIGH_DEFAULT_OFFSET_X = 0.35
-local THIGH_DEFAULT_OFFSET_Y = -0.55
-local THIGH_DEFAULT_OFFSET_Z = 0.0
-local THIGH_DEFAULT_DIA = 0.7
-local THIGH_DEFAULT_LEN = 1.1
-local SHIN_DEFAULT_DIA = 0.45
-local SHIN_DEFAULT_LEN = 1.0
-
 local JIGGLE_SMOOTH = 9
 local JIGGLE_SPEED_FACTOR = 0.018
 local BREATHE_AMP = 0.015
@@ -67,6 +59,7 @@ local FART_COLOR = Color3.fromRGB(100, 120, 20)
 local EAT_FLY_TIME = 0.6
 local EAT_SWALLOW_TIME = 0.55
 
+-- 吃东西模式
 local FOOD_MAX = 100
 local FOOD_DECAY_PER_SEC = 2
 local FOOD_START_LEVEL = 60
@@ -76,6 +69,7 @@ local FOOD_FART_JITTER = 2.0
 local FOOD_BURGER_COOLDOWN = 8
 local FOOD_BURGER_FART_DELAY = 3
 
+-- 换装模式
 local AVATAR_IDS = {
     Head1 = 13515459109,
     Head2 = 11269691136,
@@ -108,12 +102,6 @@ local chestJiggle = Vector3.new(0, 0, 0)
 local isButtEnabled = false
 local buttL, buttR, buttWeldL, buttWeldR
 local buttJiggle = Vector3.new(0, 0, 0)
-
--- 腿部
-local isLegEnabled = false
-local thighL, thighR, thighWeldL, thighWeldR
-local shinL, shinR, shinWeldL, shinWeldR
-local legJiggle = Vector3.new(0, 0, 0)
 
 local isBellyHidden = false
 local isBellyCollideEnabled = false
@@ -150,35 +138,23 @@ local burgerCooldown = 0
 local burgerCdLabel = nil
 local burgerFartThread = nil
 
+-- 换装
 local isAvatarSkinEnabled = false
 local savedOriginalDescription = nil
 
--- 贴图运行时对象
-local textures = {
-    belly = {}, navel = {},
-    chestL = {}, chestR = {},
-    buttL = {}, buttR = {},
-    thighL = {}, thighR = {},
-    shinL = {}, shinR = {},
-}
+-- forward decls
+local applySettings
+local doEat
+local startDigest
+local doFart
+local stopFoodMode
+local updateFoodUI
+local updateBurgerCD
+local startRenderLoop
+local startStruggleLoop
+local stopStruggleLoop
+local createBelly
 
--- ================= 贴图默认配置 =================
-local function defaultTexCfg()
-    return {
-        enabled = false,
-        source = "Shirt",
-        customId = "",
-        rectX = 0.25, rectY = 0.25,
-        rectW = 0.25, rectH = 0.25,
-        scale = 1.0,
-        opacity = 1.0,
-        alwaysOnTop = true,
-        face = Enum.NormalId.Back,
-        basePx = 585,
-    }
-end
-
--- ================= settings =================
 local settings = {
     sizeScale = BASE_SIZE_SCALE,
     sizeX = BASE_SIZE_X, sizeY = BASE_SIZE_Y, sizeZ = BASE_SIZE_Z,
@@ -201,49 +177,15 @@ local settings = {
     buttOffsetZ = BUTT_DEFAULT_OFFSET_Z,
     buttColorR = 255, buttColorG = 200, buttColorB = 180,
     buttUseSkin = true,
-    legEnabled = false,
-    thighOffsetX = THIGH_DEFAULT_OFFSET_X,
-    thighOffsetY = THIGH_DEFAULT_OFFSET_Y,
-    thighOffsetZ = THIGH_DEFAULT_OFFSET_Z,
-    thighDia = THIGH_DEFAULT_DIA,
-    thighLen = THIGH_DEFAULT_LEN,
-    shinDia = SHIN_DEFAULT_DIA,
-    shinLen = SHIN_DEFAULT_LEN,
-    legJiggle = 1.0,
-    legUseSkin = true,
-    legColorR = 255, legColorG = 200, legColorB = 180,
     syncAllEnabled = false,
     syncSelectedPlayerName = "",
     avatarSkinEnabled = false,
-    tex = {
-        belly = defaultTexCfg(), navel = defaultTexCfg(),
-        chestL = defaultTexCfg(), chestR = defaultTexCfg(),
-        buttL = defaultTexCfg(), buttR = defaultTexCfg(),
-        thighL = defaultTexCfg(), thighR = defaultTexCfg(),
-        shinL = defaultTexCfg(), shinR = defaultTexCfg(),
-    },
 }
 
 -- ================= 持久化 =================
 local function saveSettings()
     if not writefile then return end
     pcall(function() writefile(SETTINGS_FILE, HttpService:JSONEncode(settings)) end)
-end
-
-local function mergeTexCfg(dst, src)
-    if type(src) ~= "table" then return end
-    for k, v in pairs(src) do
-        if k == "face" then
-            if type(v) == "number" then
-                local ok, item = pcall(function() return Enum.NormalId:FromValue(v) end)
-                if ok and item then dst.face = item end
-            elseif typeof(v) == "EnumItem" then
-                dst.face = v
-            end
-        elseif dst[k] ~= nil and type(v) == type(dst[k]) then
-            dst[k] = v
-        end
-    end
 end
 
 local function loadSettings()
@@ -256,20 +198,13 @@ local function loadSettings()
     local ok2, decoded = pcall(function() return HttpService:JSONDecode(data) end)
     if not ok2 or type(decoded) ~= "table" then return end
     for k, v in pairs(decoded) do
-        if k == "tex" and type(v) == "table" then
-            for part, cfg in pairs(v) do
-                if settings.tex[part] then mergeTexCfg(settings.tex[part], cfg) end
-            end
-        elseif settings[k] ~= nil and type(v) == type(settings[k]) then
-            settings[k] = v
-        end
+        if settings[k] ~= nil and type(v) == type(settings[k]) then settings[k] = v end
     end
     syncAllEnabled = settings.syncAllEnabled
     if settings.syncSelectedPlayerName and settings.syncSelectedPlayerName ~= "" then
         syncSelectedPlayerName = settings.syncSelectedPlayerName
     end
     isAvatarSkinEnabled = settings.avatarSkinEnabled or false
-    isLegEnabled = settings.legEnabled or false
 end
 
 local saveDebounce = false
@@ -284,129 +219,9 @@ local function getTorso(character)
     return character:FindFirstChild("Torso") or character:FindFirstChild("UpperTorso")
 end
 
--- ================= 贴图模块 =================
-local function normalizeAssetId(texture)
-    if not texture or texture == "" then return nil end
-    if texture:find("rbxassetid://") then return texture end
-    local id = texture:match("id=(%d+)")
-    if id then return "rbxassetid://" .. id end
-    return texture
-end
-
-local function getShirtTextureId(character)
-    local shirt = character and character:FindFirstChildOfClass("Shirt")
-    if shirt and shirt.Texture and shirt.Texture ~= "" then
-        return normalizeAssetId(shirt.Texture)
-    end
-    return nil
-end
-
-local function getPantsTextureId(character)
-    local pants = character and character:FindFirstChildOfClass("Pants")
-    if pants and pants.Texture and pants.Texture ~= "" then
-        return normalizeAssetId(pants.Texture)
-    end
-    return nil
-end
-
-local function resolveTextureId(cfg, character)
-    if not cfg or not cfg.enabled then return nil end
-    local src = cfg.source
-    if src == "Shirt" then return getShirtTextureId(character)
-    elseif src == "Pants" then return getPantsTextureId(character)
-    elseif src == "Custom" then
-        if cfg.customId ~= "" then return normalizeAssetId(cfg.customId) end
-    end
-    return nil
-end
-
-local destroyPartTexture = function(texEntry)
-    if not texEntry then return end
-    if texEntry.gui then texEntry.gui:Destroy() end
-    texEntry.gui = nil
-    texEntry.img = nil
-end
-
-local createPartTexture = function(part, texEntry, face)
-    if not part or not texEntry then return end
-    destroyPartTexture(texEntry)
-    if typeof(face) ~= "EnumItem" then face = Enum.NormalId.Back end
-    local gui = Instance.new("SurfaceGui")
-    gui.Name = "PartClothTexture"
-    gui.Face = face
-    gui.AlwaysOnTop = true
-    gui.LightInfluence = 0
-    gui.ResetOnSpawn = false
-    gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
-    gui.PixelsPerStud = 128
-    gui.Parent = part
-
-    local img = Instance.new("ImageLabel")
-    img.Name = "ClothImage"
-    img.BackgroundTransparency = 1
-    img.Size = UDim2.new(1, 0, 1, 0)
-    img.Position = UDim2.new(0, 0, 0, 0)
-    img.ScaleType = Enum.ScaleType.Stretch
-    img.ImageTransparency = 0
-    img.Parent = gui
-
-    texEntry.gui = gui
-    texEntry.img = img
-end
-
-local updatePartTexture = function(texEntry, cfg, character)
-    if not texEntry or not texEntry.gui or not texEntry.img then return end
-    local texId = resolveTextureId(cfg, character)
-    if not texId then
-        texEntry.gui.Enabled = false
-        return
-    end
-    texEntry.gui.Enabled = true
-    texEntry.gui.AlwaysOnTop = cfg.alwaysOnTop
-    local wantFace = cfg.face
-    if typeof(wantFace) ~= "EnumItem" then wantFace = Enum.NormalId.Back end
-    if texEntry.gui.Face ~= wantFace then texEntry.gui.Face = wantFace end
-
-    if texEntry.img.Image ~= texId then texEntry.img.Image = texId end
-
-    local basePx = cfg.basePx or 585
-    local w = math.clamp(cfg.rectW, 0.01, 1)
-    local h = math.clamp(cfg.rectH, 0.01, 1)
-    local ox = math.clamp(cfg.rectX, 0, 1 - w)
-    local oy = math.clamp(cfg.rectY, 0, 1 - h)
-
-    local off = Vector2.new(ox * basePx, oy * basePx)
-    local sz = Vector2.new(w * basePx, h * basePx)
-    if texEntry.img.ImageRectOffset ~= off then texEntry.img.ImageRectOffset = off end
-    if texEntry.img.ImageRectSize ~= sz then texEntry.img.ImageRectSize = sz end
-
-    local tr = 1 - math.clamp(cfg.opacity, 0, 1)
-    if texEntry.img.ImageTransparency ~= tr then texEntry.img.ImageTransparency = tr end
-end
-
-local function updateAllTextures(character)
-    if belly and textures.belly.gui then updatePartTexture(textures.belly, settings.tex.belly, character) end
-    if navel and textures.navel.gui then updatePartTexture(textures.navel, settings.tex.navel, character) end
-    if chestL and textures.chestL.gui then updatePartTexture(textures.chestL, settings.tex.chestL, character) end
-    if chestR and textures.chestR.gui then updatePartTexture(textures.chestR, settings.tex.chestR, character) end
-    if buttL and textures.buttL.gui then updatePartTexture(textures.buttL, settings.tex.buttL, character) end
-    if buttR and textures.buttR.gui then updatePartTexture(textures.buttR, settings.tex.buttR, character) end
-    if thighL and textures.thighL.gui then updatePartTexture(textures.thighL, settings.tex.thighL, character) end
-    if thighR and textures.thighR.gui then updatePartTexture(textures.thighR, settings.tex.thighR, character) end
-    if shinL and textures.shinL.gui then updatePartTexture(textures.shinL, settings.tex.shinL, character) end
-    if shinR and textures.shinR.gui then updatePartTexture(textures.shinR, settings.tex.shinR, character) end
-end
-
-local function destroyAllTextures()
-    for _, tbl in pairs(textures) do destroyPartTexture(tbl) end
-end
-
--- ================= 基础创建/销毁 =================
 local function destroyBelly()
     if renderConn then renderConn:Disconnect() renderConn = nil end
     if pulseThread then task.cancel(pulseThread) pulseThread = nil end
-    destroyPartTexture(textures.belly)
-    destroyPartTexture(textures.navel)
     if navel then navel:Destroy() navel = nil end
     if navelWeld then navelWeld:Destroy() navelWeld = nil end
     if belly then belly:Destroy() belly = nil end
@@ -428,11 +243,6 @@ end
 local function finalButtColor()
     if settings.buttUseSkin and torso then return torso.Color end
     return Color3.fromRGB(settings.buttColorR, settings.buttColorG, settings.buttColorB)
-end
-
-local function finalLegColor()
-    if settings.legUseSkin and torso then return torso.Color end
-    return Color3.fromRGB(settings.legColorR, settings.legColorG, settings.legColorB)
 end
 
 local function bellyVisibleTarget()
@@ -521,7 +331,6 @@ local function applyWeld()
     bellyWeld.C0 = computeC0()
 end
 
-local applySettings
 applySettings = function()
     if not belly then return end
     local c = finalColor()
@@ -739,7 +548,9 @@ local function applyAvatarSkin(character)
     end)
     if ok2 and desc2 then
         desc2.Torso = AVATAR_IDS.Torso
-        pcall(function() hum:ApplyDescription(desc2) end)
+        pcall(function()
+            hum:ApplyDescription(desc2)
+        end)
         task.wait(0.8)
     end
 
@@ -779,7 +590,9 @@ local function removeAvatarSkin(character)
     if savedOriginalDescription then
         local hum = character:FindFirstChildOfClass("Humanoid")
         if hum then
-            pcall(function() hum:ApplyDescription(savedOriginalDescription) end)
+            pcall(function()
+                hum:ApplyDescription(savedOriginalDescription)
+            end)
             task.wait(0.8)
         end
     end
@@ -787,8 +600,6 @@ end
 
 -- ================= 胸部 =================
 local function destroyChests()
-    destroyPartTexture(textures.chestL)
-    destroyPartTexture(textures.chestR)
     if chestL then chestL:Destroy() chestL = nil end
     if chestR then chestR:Destroy() chestR = nil end
     if chestWeldL then chestWeldL:Destroy() chestWeldL = nil end
@@ -809,7 +620,7 @@ local function createChests(character)
     local s = settings.chestSize
     local color = finalChestColor()
 
-    local function makeOne(name, xSign, texKey)
+    local function makeOne(name, xSign)
         local p = Instance.new("Part")
         p.Name = name
         p.Shape = Enum.PartType.Ball
@@ -825,14 +636,10 @@ local function createChests(character)
         w.Part1 = p
         w.C0 = chestC0(xSign)
         w.Parent = p
-        if settings.tex[texKey] then
-            pcall(function() createPartTexture(p, textures[texKey], settings.tex[texKey].face) end)
-        end
         return p, w
     end
-    chestL, chestWeldL = makeOne("ChestL", 1, "chestL")
-    chestR, chestWeldR = makeOne("ChestR", -1, "chestR")
-    pcall(function() updateAllTextures(character) end)
+    chestL, chestWeldL = makeOne("ChestL", 1)
+    chestR, chestWeldR = makeOne("ChestR", -1)
 end
 
 local function updateChests()
@@ -865,8 +672,6 @@ end
 
 -- ================= 屁股 =================
 local function destroyButts()
-    destroyPartTexture(textures.buttL)
-    destroyPartTexture(textures.buttR)
     if buttL then buttL:Destroy() buttL = nil end
     if buttR then buttR:Destroy() buttR = nil end
     if buttWeldL then buttWeldL:Destroy() buttWeldL = nil end
@@ -887,7 +692,7 @@ local function createButts(character)
     local s = settings.buttSize
     local color = finalButtColor()
 
-    local function makeOne(name, xSign, texKey)
+    local function makeOne(name, xSign)
         local p = Instance.new("Part")
         p.Name = name
         p.Shape = Enum.PartType.Ball
@@ -903,14 +708,10 @@ local function createButts(character)
         w.Part1 = p
         w.C0 = buttC0(xSign)
         w.Parent = p
-        if settings.tex[texKey] then
-            pcall(function() createPartTexture(p, textures[texKey], settings.tex[texKey].face) end)
-        end
         return p, w
     end
-    buttL, buttWeldL = makeOne("ButtL", 1, "buttL")
-    buttR, buttWeldR = makeOne("ButtR", -1, "buttR")
-    pcall(function() updateAllTextures(character) end)
+    buttL, buttWeldL = makeOne("ButtL", 1)
+    buttR, buttWeldR = makeOne("ButtR", -1)
 end
 
 local function updateButts()
@@ -939,132 +740,6 @@ local function updateButtJiggle(dt)
     local bz = settings.buttOffsetZ + buttJiggle.Z
     buttWeldL.C0 = CFrame.new(bx, by, bz)
     if buttWeldR then buttWeldR.C0 = CFrame.new(-bx, by, bz) end
-end
-
--- ================= 腿部 =================
-local function makeVerticalCylinder(name, diameter, length, color, parent)
-    local p = Instance.new("Part")
-    p.Name = name
-    p.Shape = Enum.PartType.Cylinder
-    p.Material = Enum.Material.SmoothPlastic
-    p.Color = color
-    p.CanCollide, p.CanQuery, p.CanTouch = false, false, false
-    p.Massless = true
-    p.Size = Vector3.new(length, diameter, diameter)
-    p.Parent = parent
-    return p
-end
-
-local destroyLegs
-destroyLegs = function()
-    destroyPartTexture(textures.thighL)
-    destroyPartTexture(textures.thighR)
-    destroyPartTexture(textures.shinL)
-    destroyPartTexture(textures.shinR)
-    if thighL then thighL:Destroy() thighL = nil end
-    if thighR then thighR:Destroy() thighR = nil end
-    if shinL then shinL:Destroy() shinL = nil end
-    if shinR then shinR:Destroy() shinR = nil end
-    if thighWeldL then thighWeldL:Destroy() thighWeldL = nil end
-    if thighWeldR then thighWeldR:Destroy() thighWeldR = nil end
-    if shinWeldL then shinWeldL:Destroy() shinWeldL = nil end
-    if shinWeldR then shinWeldR:Destroy() shinWeldR = nil end
-    legJiggle = Vector3.new(0, 0, 0)
-end
-
-local function thighC0(xSign)
-    return CFrame.new(
-        settings.thighOffsetX * xSign,
-        settings.thighOffsetY,
-        settings.thighOffsetZ
-    ) * CFrame.Angles(0, 0, math.rad(90))
-end
-
-local function shinC0()
-    return CFrame.new(-(settings.thighLen + settings.shinLen) * 0.5, 0, 0)
-end
-
-local function createLegs(character)
-    destroyLegs()
-    if not isLegEnabled then return end
-    local t = getTorso(character)
-    if not t then return end
-    torso = t
-    local color = finalLegColor()
-
-    local function buildSide(xSign, thighTexKey, shinTexKey)
-        local thigh = makeVerticalCylinder(
-            (xSign > 0 and "ThighL" or "ThighR"),
-            settings.thighDia, settings.thighLen, color, character
-        )
-        local tw = Instance.new("Weld")
-        tw.Name = "ThighWeld"
-        tw.Part0 = t
-        tw.Part1 = thigh
-        tw.C0 = thighC0(xSign)
-        tw.Parent = thigh
-
-        local shin = makeVerticalCylinder(
-            (xSign > 0 and "ShinL" or "ShinR"),
-            settings.shinDia, settings.shinLen, color, character
-        )
-        local sw = Instance.new("Weld")
-        sw.Name = "ShinWeld"
-        sw.Part0 = thigh
-        sw.Part1 = shin
-        sw.C0 = shinC0()
-        sw.Parent = shin
-
-        if settings.tex[thighTexKey] then
-            pcall(function() createPartTexture(thigh, textures[thighTexKey], settings.tex[thighTexKey].face) end)
-        end
-        if settings.tex[shinTexKey] then
-            pcall(function() createPartTexture(shin, textures[shinTexKey], settings.tex[shinTexKey].face) end)
-        end
-
-        return thigh, tw, shin, sw
-    end
-
-    thighL, thighWeldL, shinL, shinWeldL = buildSide(1, "thighL", "shinL")
-    thighR, thighWeldR, shinR, shinWeldR = buildSide(-1, "thighR", "shinR")
-    pcall(function() updateAllTextures(character) end)
-end
-
-local function updateLegs()
-    if not thighWeldL or not thighWeldR then return end
-    local color = finalLegColor()
-    local function updateSide(thigh, shin, thighW, shinW, xSign)
-        if thigh then
-            thigh.Size = Vector3.new(settings.thighLen, settings.thighDia, settings.thighDia)
-            thigh.Color = color
-        end
-        if shin then
-            shin.Size = Vector3.new(settings.shinLen, settings.shinDia, settings.shinDia)
-            shin.Color = color
-        end
-        if thighW then thighW.C0 = thighC0(xSign) end
-        if shinW then shinW.C0 = shinC0() end
-    end
-    updateSide(thighL, shinL, thighWeldL, shinWeldL, 1)
-    updateSide(thighR, shinR, thighWeldR, shinWeldR, -1)
-end
-
-local function updateLegJiggle(dt)
-    if not thighWeldL or not rootPart then return end
-    local localVel = rootPart.CFrame:VectorToObjectSpace(rootPart.AssemblyLinearVelocity)
-    local violentMult = isViolentMode and VIOLENT_JIGGLE_MULT or 1.0
-    local jiggleAmp = settings.legJiggle * JIGGLE_SPEED_FACTOR * violentMult
-    local target = Vector3.new(-localVel.X * jiggleAmp, -localVel.Y * jiggleAmp * 1.5, -localVel.Z * jiggleAmp)
-    legJiggle = legJiggle:Lerp(target, math.clamp(dt * JIGGLE_SMOOTH, 0, 1))
-    local bx = settings.thighOffsetX + legJiggle.X
-    local by = settings.thighOffsetY + legJiggle.Y
-    local bz = settings.thighOffsetZ + legJiggle.Z
-    if thighWeldL then
-        thighWeldL.C0 = CFrame.new(bx, by, bz) * CFrame.Angles(0, 0, math.rad(90))
-    end
-    if thighWeldR then
-        thighWeldR.C0 = CFrame.new(-bx, by, bz) * CFrame.Angles(0, 0, math.rad(90))
-    end
 end
 
 -- ================= 找最近玩家 =================
@@ -1123,7 +798,6 @@ local function createRemoteBelly(plr, character)
         pulseScale = 1, pulseTarget = 1,
         eatAppearAlpha = 1, eatGrowScale = 1, digestVisualScale = 1,
         nextStruggleSwitch = tick(), nextPulse = tick(),
-        tex = {},
     }
 
     local skinColor = t.Color
@@ -1156,34 +830,9 @@ local function createRemoteBelly(plr, character)
     nw.Parent = inst.navel
     inst.navelWeld = nw
 
-    local function remoteTex(part, key)
-        if not settings.tex[key] then return end
-        local face = settings.tex[key].face
-        if typeof(face) ~= "EnumItem" then face = Enum.NormalId.Back end
-        local gui = Instance.new("SurfaceGui")
-        gui.Name = "RemoteCloth"
-        gui.Face = face
-        gui.AlwaysOnTop = settings.tex[key].alwaysOnTop
-        gui.LightInfluence = 0
-        gui.ResetOnSpawn = false
-        gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
-        gui.PixelsPerStud = 128
-        gui.Parent = part
-        local img = Instance.new("ImageLabel")
-        img.BackgroundTransparency = 1
-        img.Size = UDim2.new(1, 0, 1, 0)
-        img.ScaleType = Enum.ScaleType.Stretch
-        img.Parent = gui
-        inst.tex[key] = { gui = gui, img = img }
-    end
-    pcall(function()
-        remoteTex(inst.belly, "belly")
-        remoteTex(inst.navel, "navel")
-    end)
-
     if isChestEnabled then
         local cs = settings.chestSize
-        local function makeChest(nm, xSign, texKey)
+        local function makeChest(nm, xSign)
             local p = makeRemotePart(nm, Enum.PartType.Ball,
                 Vector3.new(cs, cs, cs), skinColor, character, 0)
             local w = Instance.new("Weld")
@@ -1192,17 +841,16 @@ local function createRemoteBelly(plr, character)
             w.Part1 = p
             w.C0 = chestC0(xSign)
             w.Parent = p
-            pcall(function() remoteTex(p, texKey) end)
             return p, w
         end
-        inst.chestL, inst.chestWeldL = makeChest("ChestL", 1, "chestL")
-        inst.chestR, inst.chestWeldR = makeChest("ChestR", -1, "chestR")
+        inst.chestL, inst.chestWeldL = makeChest("ChestL", 1)
+        inst.chestR, inst.chestWeldR = makeChest("ChestR", -1)
         inst.chestJiggle = Vector3.new(0, 0, 0)
     end
 
     if isButtEnabled then
         local bs = settings.buttSize
-        local function makeButt(nm, xSign, texKey)
+        local function makeButt(nm, xSign)
             local p = makeRemotePart(nm, Enum.PartType.Ball,
                 Vector3.new(bs, bs, bs), skinColor, character, 0)
             local w = Instance.new("Weld")
@@ -1211,11 +859,10 @@ local function createRemoteBelly(plr, character)
             w.Part1 = p
             w.C0 = buttC0(xSign)
             w.Parent = p
-            pcall(function() remoteTex(p, texKey) end)
             return p, w
         end
-        inst.buttL, inst.buttWeldL = makeButt("ButtL", 1, "buttL")
-        inst.buttR, inst.buttWeldR = makeButt("ButtR", -1, "buttR")
+        inst.buttL, inst.buttWeldL = makeButt("ButtL", 1)
+        inst.buttR, inst.buttWeldR = makeButt("ButtR", -1)
         inst.buttJiggle = Vector3.new(0, 0, 0)
     end
 
@@ -1232,11 +879,6 @@ local function destroyRemoteBelly(plr)
     }) do
         local obj = inst[key]
         if obj then pcall(function() obj:Destroy() end) end
-    end
-    if inst.tex then
-        for _, te in pairs(inst.tex) do
-            if te.gui then pcall(function() te.gui:Destroy() end) end
-        end
     end
     syncedPlayers[plr] = nil
 end
@@ -1260,7 +902,7 @@ local function refreshSyncedPlayers()
         if shouldSyncPlayer(plr) and plr.Character then
             local t = getTorso(plr.Character)
             if t and not syncedPlayers[plr] then
-                pcall(function() createRemoteBelly(plr, plr.Character) end)
+                createRemoteBelly(plr, plr.Character)
             end
         end
     end
@@ -1413,16 +1055,10 @@ local function updateRemoteBelly(inst, dt)
         inst.buttWeldL.C0 = CFrame.new(bx, by, bz)
         if inst.buttWeldR then inst.buttWeldR.C0 = CFrame.new(-bx, by, bz) end
     end
-
-    if inst.tex then
-        for key, te in pairs(inst.tex) do
-            if te.gui then pcall(function() updatePartTexture(te, settings.tex[key], inst.character) end) end
-        end
-    end
 end
 
 -- ================= 渲染循环 =================
-local function startRenderLoop()
+startRenderLoop = function()
     if renderConn then renderConn:Disconnect() end
     renderConn = RunService.RenderStepped:Connect(function(dt)
         if not bellyWeld or not belly or not rootPart then
@@ -1498,9 +1134,6 @@ local function startRenderLoop()
 
         if isChestEnabled then updateChestJiggle(dt) end
         if isButtEnabled then updateButtJiggle(dt) end
-        if isLegEnabled then updateLegJiggle(dt) end
-
-        pcall(function() updateAllTextures(player.Character) end)
 
         if eatState == "hunting" and not isBellyHidden then
             local tgt = getNearestPlayer()
@@ -1556,7 +1189,7 @@ local function ensureBulges()
     end
 end
 
-local function startStruggleLoop()
+startStruggleLoop = function()
     if struggleThread then return end
     struggleThread = task.spawn(function()
         while isStrugglingEnabled do
@@ -1579,7 +1212,7 @@ local function startStruggleLoop()
     end)
 end
 
-local function stopStruggleLoop()
+stopStruggleLoop = function()
     isStrugglingEnabled = false
     if struggleThread then task.cancel(struggleThread) struggleThread = nil end
     for _, b in ipairs(struggleBulges) do b.target = 1 b.cur = 1 end
@@ -1589,7 +1222,7 @@ local function stopStruggleLoop()
 end
 
 -- ================= 创建肚子 =================
-local function createBelly(character)
+createBelly = function(character)
     destroyBelly()
     torso = getTorso(character)
     if not torso then return end
@@ -1652,10 +1285,6 @@ local function createBelly(character)
     navelWeld.Parent = navel
 
     applySettings()
-    pcall(function() createPartTexture(belly, textures.belly, settings.tex.belly.face) end)
-    pcall(function() createPartTexture(navel, textures.navel, settings.tex.navel.face) end)
-    pcall(function() updateAllTextures(character) end)
-
     startRenderLoop()
     startPulseLoop()
     if isStrugglingEnabled then startStruggleLoop() end
@@ -1855,7 +1484,6 @@ local function showDigestButton()
     end)
 end
 
-local doEat
 doEat = function(target)
     if not target then return end
     hasEaten = true
@@ -1889,7 +1517,7 @@ doEat = function(target)
     end
 end
 
-local function doFart()
+doFart = function()
     if not rootPart then return end
     local origin = rootPart.Position + Vector3.new(0, -1.5, 0)
     for i = 1, FART_PARTICLES do
@@ -1928,7 +1556,7 @@ local function doFart()
     end
 end
 
-local function startDigest()
+startDigest = function()
     if eatState ~= "digesting-ready" then return end
     eatState = "digesting"
     doFart()
@@ -2024,7 +1652,7 @@ local function stopViolentMode()
 end
 
 -- ================= 吃东西模式 =================
-local function updateFoodUI()
+updateFoodUI = function()
     if not foodGui then return end
     local ratio = math.clamp(foodLevel / FOOD_MAX, 0, 1)
     if foodBarFill then
@@ -2042,7 +1670,7 @@ local function updateFoodUI()
     end
 end
 
-local function updateBurgerCD()
+updateBurgerCD = function()
     if not burgerSlot then return end
     if burgerCooldown > 0 then
         burgerSlot.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
@@ -2160,8 +1788,8 @@ local function buildUI()
 
     local mainFrame = Instance.new("Frame")
     mainFrame.Name = "MainFrame"
-    mainFrame.Size = UDim2.new(0, 300, 0, 460)
-    mainFrame.Position = UDim2.new(0.02, 0, 0.08, 0)
+    mainFrame.Size = UDim2.new(0, 280, 0, 440)
+    mainFrame.Position = UDim2.new(0.02, 0, 0.1, 0)
     mainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
     mainFrame.BackgroundTransparency = 0.15
     mainFrame.BorderSizePixel = 0
@@ -2176,7 +1804,7 @@ local function buildUI()
     local title = Instance.new("TextLabel")
     title.Size = UDim2.new(1, -40, 0, 36)
     title.BackgroundTransparency = 1
-    title.Text = "身体控制面板"
+    title.Text = "肚子控制面板"
     title.TextColor3 = Color3.fromRGB(255, 255, 255)
     title.TextScaled = true
     title.Font = Enum.Font.GothamBold
@@ -2192,6 +1820,7 @@ local function buildUI()
     hideBtn.Font = Enum.Font.GothamBold
     hideBtn.TextSize = 20
     hideBtn.Parent = mainFrame
+
     local hideCorner = Instance.new("UICorner")
     hideCorner.CornerRadius = UDim.new(0, 6)
     hideCorner.Parent = hideBtn
@@ -2203,7 +1832,7 @@ local function buildUI()
     showBtn.BackgroundColor3 = Color3.fromRGB(80, 120, 200)
     showBtn.BackgroundTransparency = 0.1
     showBtn.BorderSizePixel = 0
-    showBtn.Text = "身体"
+    showBtn.Text = "肚子"
     showBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
     showBtn.Font = Enum.Font.GothamBold
     showBtn.TextSize = 16
@@ -2211,6 +1840,7 @@ local function buildUI()
     showBtn.Active = true
     showBtn.Draggable = true
     showBtn.Parent = screenGui
+
     local showCorner = Instance.new("UICorner")
     showCorner.CornerRadius = UDim.new(1, 0)
     showCorner.Parent = showBtn
@@ -2230,7 +1860,7 @@ local function buildUI()
     scroll.BackgroundTransparency = 1
     scroll.BorderSizePixel = 0
     scroll.ScrollBarThickness = 4
-    scroll.CanvasSize = UDim2.new(0, 0, 0, 8000)
+    scroll.CanvasSize = UDim2.new(0, 0, 0, 4400)
     scroll.Parent = mainFrame
 
     local layout = Instance.new("UIListLayout")
@@ -2268,6 +1898,7 @@ local function buildUI()
         slider.Text = ""
         slider.AutoButtonColor = false
         slider.Parent = container
+
         local c2 = Instance.new("UICorner")
         c2.CornerRadius = UDim.new(0, 4)
         c2.Parent = slider
@@ -2277,6 +1908,7 @@ local function buildUI()
         fill.BackgroundColor3 = fillColor or Color3.fromRGB(100, 160, 255)
         fill.BorderSizePixel = 0
         fill.Parent = slider
+
         local fc2 = Instance.new("UICorner")
         fc2.CornerRadius = UDim.new(0, 4)
         fc2.Parent = fill
@@ -2346,6 +1978,7 @@ local function buildUI()
         btn.Font = Enum.Font.GothamBold
         btn.TextSize = 14
         btn.Parent = container
+
         local c = Instance.new("UICorner")
         c.CornerRadius = UDim.new(0, 4)
         c.Parent = btn
@@ -2366,21 +1999,7 @@ local function buildUI()
         return container
     end
 
-    local function makeSectionHeader(text)
-        local lbl = Instance.new("TextLabel")
-        lbl.Size = UDim2.new(1, -10, 0, 28)
-        lbl.BackgroundTransparency = 1
-        lbl.Text = "—— " .. text .. " ——"
-        lbl.TextColor3 = Color3.fromRGB(255, 210, 120)
-        lbl.Font = Enum.Font.GothamBold
-        lbl.TextSize = 15
-        lbl.LayoutOrder = nextY()
-        lbl.Parent = scroll
-        return lbl
-    end
-
-    -- ===== 肚子 =====
-    makeSectionHeader("肚子")
+    -- ===== 肚子基础 =====
     makeSlider("整体大小", 0.1, 5, settings.sizeScale, 0.05, function(v) settings.sizeScale = v end)
     makeSlider("宽 X", 0.5, 10, settings.sizeX, 0.1, function(v) settings.sizeX = v end)
     makeSlider("高 Y", 0.5, 10, settings.sizeY, 0.1, function(v) settings.sizeY = v end)
@@ -2388,6 +2007,9 @@ local function buildUI()
     makeSlider("位置 X", -5, 5, settings.offsetX, 0.05, function(v) settings.offsetX = v applySettings() end)
     makeSlider("位置 Y", -5, 5, settings.offsetY, 0.05, function(v) settings.offsetY = v applySettings() end)
     makeSlider("位置 Z", -5, 5, settings.offsetZ, 0.05, function(v) settings.offsetZ = v applySettings() end)
+    makeSlider("旋转 X", -180, 180, settings.rotX, 5, function(v) settings.rotX = v applySettings() end, Color3.fromRGB(180, 140, 255), "%.0f°")
+    makeSlider("旋转 Y", -180, 180, settings.rotY, 5, function(v) settings.rotY = v applySettings() end, Color3.fromRGB(180, 140, 255), "%.0f°")
+    makeSlider("旋转 Z", -180, 180, settings.rotZ, 5, function(v) settings.rotZ = v applySettings() end, Color3.fromRGB(180, 140, 255), "%.0f°")
     makeSlider("颜色 R", 0, 255, settings.colorR, 1, function(v) settings.colorR = math.floor(v) applySettings() end)
     makeSlider("颜色 G", 0, 255, settings.colorG, 1, function(v) settings.colorG = math.floor(v) applySettings() end)
     makeSlider("颜色 B", 0, 255, settings.colorB, 1, function(v) settings.colorB = math.floor(v) applySettings() end)
@@ -2396,176 +2018,42 @@ local function buildUI()
         Color3.fromRGB(255, 255, 255), "%.2f")
 
     -- ===== 动态 =====
-    makeSectionHeader("动态")
     makeSlider("抖动幅度", 0, 3, settings.shakeAmp, 0.1, function(v) settings.shakeAmp = v end)
     makeSlider("走路晃动幅度", 0, 3, settings.walkAmp, 0.1, function(v) settings.walkAmp = v end)
     makeSlider("脉动幅度", 0, 0.3, settings.pulseAmp, 0.01, function(v) settings.pulseAmp = v end)
+    makeSlider("脉动最短间隔", 0.2, 10, settings.pulseIntervalMin, 0.1, function(v) settings.pulseIntervalMin = v end)
+    makeSlider("脉动最长间隔", 0.2, 10, settings.pulseIntervalMax, 0.1, function(v) settings.pulseIntervalMax = v end)
     makeSlider("挣扎幅度", 0, 3, settings.struggleAmp, 0.1, function(v) settings.struggleAmp = v end, Color3.fromRGB(255, 180, 100))
 
     -- ===== 胸部 =====
-    makeSectionHeader("胸部")
     makeSlider("胸部大小", 0.3, 2.0, settings.chestSize, 0.05, function(v) settings.chestSize = v updateChests() end, Color3.fromRGB(255, 200, 220))
     makeSlider("胸部晃动", 0, 3, settings.chestJiggle, 0.1, function(v) settings.chestJiggle = v end, Color3.fromRGB(255, 200, 220))
     makeSlider("胸位置 X", -2, 2, settings.chestOffsetX, 0.02, function(v) settings.chestOffsetX = v updateChests() end, Color3.fromRGB(255, 170, 200))
     makeSlider("胸位置 Y", -2, 2, settings.chestOffsetY, 0.02, function(v) settings.chestOffsetY = v updateChests() end, Color3.fromRGB(255, 170, 200))
     makeSlider("胸位置 Z", -2, 1, settings.chestOffsetZ, 0.02, function(v) settings.chestOffsetZ = v updateChests() end, Color3.fromRGB(255, 170, 200))
+    makeSlider("胸颜色 R", 0, 255, settings.chestColorR, 1, function(v) settings.chestColorR = math.floor(v) updateChests() end, Color3.fromRGB(255, 170, 200), "%.0f")
+    makeSlider("胸颜色 G", 0, 255, settings.chestColorG, 1, function(v) settings.chestColorG = math.floor(v) updateChests() end, Color3.fromRGB(255, 170, 200), "%.0f")
+    makeSlider("胸颜色 B", 0, 255, settings.chestColorB, 1, function(v) settings.chestColorB = math.floor(v) updateChests() end, Color3.fromRGB(255, 170, 200), "%.0f")
 
     -- ===== 屁股 =====
-    makeSectionHeader("屁股")
     makeSlider("屁股大小", 0.3, 2.5, settings.buttSize, 0.05, function(v) settings.buttSize = v updateButts() end, Color3.fromRGB(255, 210, 210))
     makeSlider("屁股晃动", 0, 3, settings.buttJiggle, 0.1, function(v) settings.buttJiggle = v end, Color3.fromRGB(255, 210, 210))
     makeSlider("屁股位置 X", -2, 2, settings.buttOffsetX, 0.02, function(v) settings.buttOffsetX = v updateButts() end, Color3.fromRGB(255, 180, 180))
     makeSlider("屁股位置 Y", -2, 2, settings.buttOffsetY, 0.02, function(v) settings.buttOffsetY = v updateButts() end, Color3.fromRGB(255, 180, 180))
     makeSlider("屁股位置 Z", -2, 2, settings.buttOffsetZ, 0.02, function(v) settings.buttOffsetZ = v updateButts() end, Color3.fromRGB(255, 180, 180))
+    makeSlider("屁股颜色 R", 0, 255, settings.buttColorR, 1, function(v) settings.buttColorR = math.floor(v) updateButts() end, Color3.fromRGB(255, 180, 180), "%.0f")
+    makeSlider("屁股颜色 G", 0, 255, settings.buttColorG, 1, function(v) settings.buttColorG = math.floor(v) updateButts() end, Color3.fromRGB(255, 180, 180), "%.0f")
+    makeSlider("屁股颜色 B", 0, 255, settings.buttColorB, 1, function(v) settings.buttColorB = math.floor(v) updateButts() end, Color3.fromRGB(255, 180, 180), "%.0f")
 
-    -- ===== 腿部 =====
-    makeSectionHeader("腿部")
-    makeToggle("真实腿部", settings.legEnabled, function(on)
-        isLegEnabled = on
-        settings.legEnabled = on
-        if player.Character then
-            if on then createLegs(player.Character) else destroyLegs() end
-        end
-        queueSave()
-    end)
-    makeToggle("腿颜色随肤", settings.legUseSkin, function(on)
-        settings.legUseSkin = on
-        updateLegs()
-        queueSave()
-    end)
-    makeSlider("大腿宽度（直径）", 0.2, 1.5, settings.thighDia, 0.01,
-        function(v) settings.thighDia = v updateLegs() end, Color3.fromRGB(180, 255, 180))
-    makeSlider("大腿长度", 0.3, 3.0, settings.thighLen, 0.05,
-        function(v) settings.thighLen = v updateLegs() end, Color3.fromRGB(180, 255, 180))
-    makeSlider("小腿宽度（直径）", 0.1, 1.2, settings.shinDia, 0.01,
-        function(v) settings.shinDia = v updateLegs() end, Color3.fromRGB(180, 220, 255))
-    makeSlider("小腿长度", 0.2, 2.5, settings.shinLen, 0.05,
-        function(v) settings.shinLen = v updateLegs() end, Color3.fromRGB(180, 220, 255))
-    makeSlider("腿位置 X", -1.5, 1.5, settings.thighOffsetX, 0.02,
-        function(v) settings.thighOffsetX = v updateLegs() end, Color3.fromRGB(200, 255, 200))
-    makeSlider("腿位置 Y", -3, 0, settings.thighOffsetY, 0.02,
-        function(v) settings.thighOffsetY = v updateLegs() end, Color3.fromRGB(200, 255, 200))
-    makeSlider("腿位置 Z", -1, 1, settings.thighOffsetZ, 0.02,
-        function(v) settings.thighOffsetZ = v updateLegs() end, Color3.fromRGB(200, 255, 200))
-    makeSlider("腿颜色 R", 0, 255, settings.legColorR, 1,
-        function(v) settings.legColorR = math.floor(v) updateLegs() end, Color3.fromRGB(255, 180, 180), "%.0f")
-    makeSlider("腿颜色 G", 0, 255, settings.legColorG, 1,
-        function(v) settings.legColorG = math.floor(v) updateLegs() end, Color3.fromRGB(255, 180, 180), "%.0f")
-    makeSlider("腿颜色 B", 0, 255, settings.legColorB, 1,
-        function(v) settings.legColorB = math.floor(v) updateLegs() end, Color3.fromRGB(255, 180, 180), "%.0f")
-    makeSlider("腿部晃动", 0, 3, settings.legJiggle, 0.1,
-        function(v) settings.legJiggle = v end, Color3.fromRGB(200, 255, 200))
+    -- ===== 挤压 =====
+    makeSlider("挤压幅度", 0, 2, settings.squeezeAmp, 0.1, function(v) settings.squeezeAmp = v end, Color3.fromRGB(200, 255, 160))
 
-    -- ===== 分部位贴图 =====
-    makeSectionHeader("分部位贴图")
-    local partOrder = {
-        {"belly", "肚子"}, {"navel", "肚脐"},
-        {"chestL", "左胸"}, {"chestR", "右胸"},
-        {"buttL", "左屁股"}, {"buttR", "右屁股"},
-        {"thighL", "左大腿"}, {"thighR", "右大腿"},
-        {"shinL", "左小腿"}, {"shinR", "右小腿"},
-    }
-    local faceNames = { "Back", "Front", "Left", "Right", "Top", "Bottom" }
-    local faceEnums = {
-        Enum.NormalId.Back, Enum.NormalId.Front,
-        Enum.NormalId.Left, Enum.NormalId.Right,
-        Enum.NormalId.Top, Enum.NormalId.Bottom,
-    }
-
-    for _, info in ipairs(partOrder) do
-        local key, label = info[1], info[2]
-        local cfg = settings.tex[key]
-        if cfg then
-            makeToggle(label .. "贴图", cfg.enabled, function(on)
-                cfg.enabled = on
-                if on then
-                    local partMap = {
-                        belly = belly, navel = navel,
-                        chestL = chestL, chestR = chestR,
-                        buttL = buttL, buttR = buttR,
-                        thighL = thighL, thighR = thighR,
-                        shinL = shinL, shinR = shinR,
-                    }
-                    local part = partMap[key]
-                    if part then pcall(function() createPartTexture(part, textures[key], cfg.face) end) end
-                else
-                    destroyPartTexture(textures[key])
-                end
-                queueSave()
-            end)
-
-            local srcBtn = Instance.new("TextButton")
-            srcBtn.Size = UDim2.new(1, -10, 0, 26)
-            srcBtn.BackgroundColor3 = Color3.fromRGB(80, 120, 200)
-            srcBtn.BorderSizePixel = 0
-            srcBtn.Text = label .. " 来源: " .. cfg.source
-            srcBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-            srcBtn.Font = Enum.Font.Gotham
-            srcBtn.TextSize = 12
-            srcBtn.LayoutOrder = nextY()
-            srcBtn.Parent = scroll
-            local sb = Instance.new("UICorner")
-            sb.CornerRadius = UDim.new(0, 4)
-            sb.Parent = srcBtn
-            srcBtn.MouseButton1Click:Connect(function()
-                local order = {"Shirt", "Pants", "Custom"}
-                local idx = 1
-                for i, v in ipairs(order) do if v == cfg.source then idx = i end end
-                idx = idx % #order + 1
-                cfg.source = order[idx]
-                srcBtn.Text = label .. " 来源: " .. cfg.source
-                queueSave()
-            end)
-
-            local faceBtn = Instance.new("TextButton")
-            faceBtn.Size = UDim2.new(1, -10, 0, 24)
-            faceBtn.BackgroundColor3 = Color3.fromRGB(120, 80, 160)
-            faceBtn.BorderSizePixel = 0
-            local curFace0 = cfg.face
-            if typeof(curFace0) ~= "EnumItem" then curFace0 = Enum.NormalId.Back end
-            faceBtn.Text = label .. " 面: " .. faceNames[1]
-            for i, f in ipairs(faceEnums) do
-                if f == curFace0 then faceBtn.Text = label .. " 面: " .. faceNames[i] end
-            end
-            faceBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-            faceBtn.Font = Enum.Font.Gotham
-            faceBtn.TextSize = 11
-            faceBtn.LayoutOrder = nextY()
-            faceBtn.Parent = scroll
-            local fb = Instance.new("UICorner")
-            fb.CornerRadius = UDim.new(0, 4)
-            fb.Parent = faceBtn
-            faceBtn.MouseButton1Click:Connect(function()
-                local curFace = cfg.face
-                if typeof(curFace) ~= "EnumItem" then curFace = Enum.NormalId.Back end
-                local idx = 1
-                for i, v in ipairs(faceEnums) do if v == curFace then idx = i end end
-                idx = idx % #faceEnums + 1
-                cfg.face = faceEnums[idx]
-                if textures[key] and textures[key].gui then
-                    textures[key].gui.Face = cfg.face
-                end
-                faceBtn.Text = label .. " 面: " .. faceNames[idx]
-                queueSave()
-            end)
-
-            makeSlider(label .. " 裁剪X", 0, 1, cfg.rectX, 0.01, function(v) cfg.rectX = v end, Color3.fromRGB(200, 180, 255))
-            makeSlider(label .. " 裁剪Y", 0, 1, cfg.rectY, 0.01, function(v) cfg.rectY = v end, Color3.fromRGB(200, 180, 255))
-            makeSlider(label .. " 裁剪宽", 0.02, 1, cfg.rectW, 0.01, function(v) cfg.rectW = v end, Color3.fromRGB(200, 180, 255))
-            makeSlider(label .. " 裁剪高", 0.02, 1, cfg.rectH, 0.01, function(v) cfg.rectH = v end, Color3.fromRGB(200, 180, 255))
-            makeSlider(label .. " 缩放", 0.2, 3, cfg.scale, 0.05, function(v) cfg.scale = v end, Color3.fromRGB(200, 180, 255))
-            makeSlider(label .. " 不透明度", 0, 1, cfg.opacity, 0.05, function(v) cfg.opacity = v end, Color3.fromRGB(200, 180, 255))
-            makeSlider(label .. " 像素基准", 200, 2048, cfg.basePx, 1,
-                function(v) cfg.basePx = math.floor(v) end, Color3.fromRGB(180, 160, 255), "%.0f")
-        end
-    end
-
-    -- ===== 玩法开关 =====
-    makeSectionHeader("玩法开关")
+    -- ===== 开关 =====
     makeToggle("抖动效果", false, function(on)
         isShakingEnabled = on
         if on then startShakeLoop() else stopShakeLoop() end
     end)
+
     makeToggle("挣扎效果", false, function(on)
         if on then
             isStrugglingEnabled = true
@@ -2575,72 +2063,289 @@ local function buildUI()
             stopStruggleLoop()
         end
     end)
+
     makeToggle("吃人玩法", false, function(on)
         if on then startEatMode() else stopEatMode() end
     end)
-    makeToggle("吃人动画", true, function(on) eatAnimationEnabled = on end)
+
+    makeToggle("吃人动画", true, function(on)
+        eatAnimationEnabled = on
+    end)
+
     makeToggle("真实胸部", false, function(on)
         isChestEnabled = on
         if on then
             if player.Character then createChests(player.Character) end
+            for plr, inst in pairs(syncedPlayers) do
+                if not inst.chestL and inst.torso then
+                    local cs = settings.chestSize
+                    local sc = inst.torso.Color
+                    local function makeChest(nm, xSign)
+                        local p = makeRemotePart(nm, Enum.PartType.Ball,
+                            Vector3.new(cs, cs, cs), sc, inst.character, 0)
+                        local w = Instance.new("Weld")
+                        w.Name = nm .. "Weld"
+                        w.Part0 = inst.torso
+                        w.Part1 = p
+                        w.C0 = chestC0(xSign)
+                        w.Parent = p
+                        return p, w
+                    end
+                    inst.chestL, inst.chestWeldL = makeChest("ChestL", 1)
+                    inst.chestR, inst.chestWeldR = makeChest("ChestR", -1)
+                    inst.chestJiggle = Vector3.new(0, 0, 0)
+                end
+            end
         else
             destroyChests()
+            for plr, inst in pairs(syncedPlayers) do
+                for _, key in ipairs({"chestL", "chestR", "chestWeldL", "chestWeldR"}) do
+                    if inst[key] then inst[key]:Destroy() inst[key] = nil end
+                end
+            end
         end
     end)
+
+    makeToggle("胸颜色随肤", true, function(on)
+        settings.chestUseSkin = on
+        updateChests()
+        queueSave()
+    end)
+
     makeToggle("真实屁股", false, function(on)
         isButtEnabled = on
         if on then
             if player.Character then createButts(player.Character) end
+            for plr, inst in pairs(syncedPlayers) do
+                if not inst.buttL and inst.torso then
+                    local bs = settings.buttSize
+                    local sc = inst.torso.Color
+                    local function makeButt(nm, xSign)
+                        local p = makeRemotePart(nm, Enum.PartType.Ball,
+                            Vector3.new(bs, bs, bs), sc, inst.character, 0)
+                        local w = Instance.new("Weld")
+                        w.Name = nm .. "Weld"
+                        w.Part0 = inst.torso
+                        w.Part1 = p
+                        w.C0 = buttC0(xSign)
+                        w.Parent = p
+                        return p, w
+                    end
+                    inst.buttL, inst.buttWeldL = makeButt("ButtL", 1)
+                    inst.buttR, inst.buttWeldR = makeButt("ButtR", -1)
+                    inst.buttJiggle = Vector3.new(0, 0, 0)
+                end
+            end
         else
             destroyButts()
+            for plr, inst in pairs(syncedPlayers) do
+                for _, key in ipairs({"buttL", "buttR", "buttWeldL", "buttWeldR"}) do
+                    if inst[key] then inst[key]:Destroy() inst[key] = nil end
+                end
+            end
         end
     end)
+
+    makeToggle("屁股颜色随肤", true, function(on)
+        settings.buttUseSkin = on
+        updateButts()
+        queueSave()
+    end)
+
     makeToggle("剧烈模式", false, function(on)
         if on then startViolentMode() else stopViolentMode() end
     end)
+
     makeToggle("肚子碰撞箱（挤压）", false, function(on)
         isBellyCollideEnabled = on
         if not on then bellySqueezeTarget = Vector3.new(1, 1, 1) end
     end)
+
     makeToggle("肚子实体碰撞", false, function(on)
         isBellyPhysicalCollide = on
         if belly then belly.CanCollide = on end
+        for _, inst in pairs(syncedPlayers) do
+            if inst.belly then inst.belly.CanCollide = on end
+        end
     end)
+
     makeToggle("吃东西模式", false, function(on)
         if on then startFoodMode() else stopFoodMode() end
     end)
 
+    -- 【新】修改玩家外观
     makeToggle("修改玩家外观", isAvatarSkinEnabled, function(on)
         isAvatarSkinEnabled = on
         settings.avatarSkinEnabled = on
         queueSave()
+
         local char = player.Character
         if not char then return end
+
         task.spawn(function()
             if on then
                 applyAvatarSkin(char)
             else
                 removeAvatarSkin(char)
             end
+
             task.wait(0.3)
-            char = player.Character
-            if char and getTorso(char) then
+            -- ApplyDescription 会重建角色，需要重建肚子
+            if getTorso(char) then
                 createBelly(char)
                 if isChestEnabled then createChests(char) end
                 if isButtEnabled then createButts(char) end
-                if isLegEnabled then createLegs(char) end
             end
         end)
     end)
 
     -- ===== 同步 =====
-    makeSectionHeader("同步")
     makeToggle("同步所有玩家", syncAllEnabled, function(on)
         syncAllEnabled = on
         settings.syncAllEnabled = on
         queueSave()
         refreshSyncedPlayers()
     end)
+
+    local selectPlayerBtn = Instance.new("TextButton")
+    selectPlayerBtn.Name = "SelectPlayerBtn"
+    selectPlayerBtn.Size = UDim2.new(1, -10, 0, 32)
+    selectPlayerBtn.BackgroundColor3 = Color3.fromRGB(80, 120, 200)
+    selectPlayerBtn.BorderSizePixel = 0
+    selectPlayerBtn.Text = syncSelectedPlayerName and ("选定： " .. syncSelectedPlayerName) or "选择要同步的玩家"
+    selectPlayerBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    selectPlayerBtn.Font = Enum.Font.GothamBold
+    selectPlayerBtn.TextSize = 14
+    selectPlayerBtn.LayoutOrder = nextY()
+    selectPlayerBtn.Parent = scroll
+
+    local spc = Instance.new("UICorner")
+    spc.CornerRadius = UDim.new(0, 4)
+    spc.Parent = selectPlayerBtn
+
+    local playerListFrame = Instance.new("Frame")
+    playerListFrame.Name = "PlayerListFrame"
+    playerListFrame.Size = UDim2.new(0, 220, 0, 300)
+    playerListFrame.Position = UDim2.new(0.5, -110, 0.5, -150)
+    playerListFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+    playerListFrame.BorderSizePixel = 0
+    playerListFrame.Visible = false
+    playerListFrame.ZIndex = 10
+    playerListFrame.Parent = screenGui
+
+    local plc = Instance.new("UICorner")
+    plc.CornerRadius = UDim.new(0, 8)
+    plc.Parent = playerListFrame
+
+    local plTitle = Instance.new("TextLabel")
+    plTitle.Size = UDim2.new(1, -40, 0, 30)
+    plTitle.BackgroundTransparency = 1
+    plTitle.Text = "选择要同步的玩家"
+    plTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+    plTitle.Font = Enum.Font.GothamBold
+    plTitle.TextSize = 15
+    plTitle.ZIndex = 11
+    plTitle.Parent = playerListFrame
+
+    local plClose = Instance.new("TextButton")
+    plClose.Size = UDim2.new(0, 24, 0, 24)
+    plClose.Position = UDim2.new(1, -28, 0, 3)
+    plClose.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
+    plClose.BorderSizePixel = 0
+    plClose.Text = "×"
+    plClose.TextColor3 = Color3.fromRGB(255, 255, 255)
+    plClose.Font = Enum.Font.GothamBold
+    plClose.TextSize = 16
+    plClose.ZIndex = 11
+    plClose.Parent = playerListFrame
+
+    local plcc = Instance.new("UICorner")
+    plcc.CornerRadius = UDim.new(0, 6)
+    plcc.Parent = plClose
+
+    local plScroll = Instance.new("ScrollingFrame")
+    plScroll.Size = UDim2.new(1, -12, 1, -40)
+    plScroll.Position = UDim2.new(0, 6, 0, 34)
+    plScroll.BackgroundTransparency = 1
+    plScroll.BorderSizePixel = 0
+    plScroll.ScrollBarThickness = 4
+    plScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    plScroll.ZIndex = 11
+    plScroll.Parent = playerListFrame
+
+    local plLayout = Instance.new("UIListLayout")
+    plLayout.Padding = UDim.new(0, 4)
+    plLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    plLayout.Parent = plScroll
+
+    local function rebuildPlayerList()
+        for _, ch in ipairs(plScroll:GetChildren()) do
+            if ch:IsA("TextButton") then ch:Destroy() end
+        end
+
+        local noneBtn = Instance.new("TextButton")
+        noneBtn.Size = UDim2.new(1, -6, 0, 30)
+        noneBtn.BackgroundColor3 = Color3.fromRGB(70, 70, 80)
+        noneBtn.BorderSizePixel = 0
+        noneBtn.Text = "（不选定任何玩家）"
+        noneBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        noneBtn.Font = Enum.Font.Gotham
+        noneBtn.TextSize = 13
+        noneBtn.ZIndex = 12
+        noneBtn.Parent = plScroll
+        local nc = Instance.new("UICorner")
+        nc.CornerRadius = UDim.new(0, 4)
+        nc.Parent = noneBtn
+
+        noneBtn.MouseButton1Click:Connect(function()
+            syncSelectedPlayerName = nil
+            settings.syncSelectedPlayerName = ""
+            selectPlayerBtn.Text = "选择要同步的玩家"
+            queueSave()
+            refreshSyncedPlayers()
+            playerListFrame.Visible = false
+        end)
+
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= player then
+                local btn = Instance.new("TextButton")
+                btn.Size = UDim2.new(1, -6, 0, 30)
+                local selected = (syncSelectedPlayerName == plr.Name)
+                btn.BackgroundColor3 = selected and Color3.fromRGB(80, 160, 100) or Color3.fromRGB(55, 55, 65)
+                btn.BorderSizePixel = 0
+                btn.Text = plr.DisplayName .. " (@" .. plr.Name .. ")"
+                btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+                btn.Font = Enum.Font.Gotham
+                btn.TextSize = 13
+                btn.ZIndex = 12
+                btn.Parent = plScroll
+                local bc = Instance.new("UICorner")
+                bc.CornerRadius = UDim.new(0, 4)
+                bc.Parent = btn
+
+                btn.MouseButton1Click:Connect(function()
+                    syncSelectedPlayerName = plr.Name
+                    settings.syncSelectedPlayerName = plr.Name
+                    selectPlayerBtn.Text = "选定： " .. plr.Name
+                    queueSave()
+                    refreshSyncedPlayers()
+                    playerListFrame.Visible = false
+                end)
+            end
+        end
+
+        plScroll.CanvasSize = UDim2.new(0, 0, 0, plLayout.AbsoluteContentSize.Y + 8)
+    end
+
+    selectPlayerBtn.MouseButton1Click:Connect(function()
+        rebuildPlayerList()
+        playerListFrame.Visible = true
+    end)
+
+    plClose.MouseButton1Click:Connect(function()
+        playerListFrame.Visible = false
+    end)
+
     local refreshBtn = Instance.new("TextButton")
     refreshBtn.Size = UDim2.new(1, -10, 0, 28)
     refreshBtn.BackgroundColor3 = Color3.fromRGB(70, 90, 130)
@@ -2658,8 +2363,7 @@ local function buildUI()
         refreshSyncedPlayers()
     end)
 
-    -- ===== 其他 =====
-    makeSectionHeader("其他")
+    -- ===== 关闭肚子 =====
     local closeBellyBtn = Instance.new("TextButton")
     closeBellyBtn.Size = UDim2.new(1, -10, 0, 32)
     closeBellyBtn.BackgroundColor3 = Color3.fromRGB(90, 90, 100)
@@ -2670,30 +2374,45 @@ local function buildUI()
     closeBellyBtn.TextSize = 14
     closeBellyBtn.LayoutOrder = nextY()
     closeBellyBtn.Parent = scroll
+
     local cbc = Instance.new("UICorner")
     cbc.CornerRadius = UDim.new(0, 4)
     cbc.Parent = closeBellyBtn
+
     closeBellyBtn.MouseButton1Click:Connect(function()
         isBellyHidden = not isBellyHidden
-        closeBellyBtn.Text = isBellyHidden and "打开肚子" or "关闭肚子"
-        closeBellyBtn.BackgroundColor3 = isBellyHidden and Color3.fromRGB(80, 160, 100) or Color3.fromRGB(90, 90, 100)
+        if isBellyHidden then
+            closeBellyBtn.Text = "打开肚子"
+            closeBellyBtn.BackgroundColor3 = Color3.fromRGB(80, 160, 100)
+        else
+            closeBellyBtn.Text = "关闭肚子"
+            closeBellyBtn.BackgroundColor3 = Color3.fromRGB(90, 90, 100)
+        end
         if belly then belly.Transparency = bellyVisibleTarget() end
         if navel then navel.Transparency = bellyVisibleTarget() end
+        local vt = remoteVisibleTarget()
+        for _, inst in pairs(syncedPlayers) do
+            if inst.belly then inst.belly.Transparency = vt end
+            if inst.navel then inst.navel.Transparency = vt end
+        end
     end)
 
+    -- ===== 重置 =====
     local resetBtn = Instance.new("TextButton")
     resetBtn.Size = UDim2.new(1, -10, 0, 32)
     resetBtn.BackgroundColor3 = Color3.fromRGB(180, 80, 80)
     resetBtn.BorderSizePixel = 0
-    resetBtn.Text = "重置全部"
+    resetBtn.Text = "重置"
     resetBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
     resetBtn.Font = Enum.Font.GothamBold
     resetBtn.TextSize = 14
     resetBtn.LayoutOrder = nextY()
     resetBtn.Parent = scroll
+
     local rc = Instance.new("UICorner")
     rc.CornerRadius = UDim.new(0, 4)
     rc.Parent = resetBtn
+
     resetBtn.MouseButton1Click:Connect(function()
         settings.sizeScale = BASE_SIZE_SCALE
         settings.sizeX, settings.sizeY, settings.sizeZ = BASE_SIZE_X, BASE_SIZE_Y, BASE_SIZE_Z
@@ -2703,38 +2422,31 @@ local function buildUI()
         settings.whiteMix = 0
         settings.shakeAmp, settings.walkAmp = 1.0, 1.0
         settings.pulseAmp = 0.08
+        settings.pulseIntervalMin, settings.pulseIntervalMax = 1.5, 3.5
         settings.struggleAmp = 1.0
         settings.squeezeAmp = 1.0
         settings.chestSize = 0.7
         settings.chestJiggle = 1.0
+        settings.chestOffsetX = CHEST_DEFAULT_OFFSET_X
+        settings.chestOffsetY = CHEST_DEFAULT_OFFSET_Y
+        settings.chestOffsetZ = CHEST_DEFAULT_OFFSET_Z
+        settings.chestColorR, settings.chestColorG, settings.chestColorB = 255, 200, 180
+        settings.chestUseSkin = true
         settings.buttSize = 0.75
         settings.buttJiggle = 1.0
-        settings.thighDia = THIGH_DEFAULT_DIA
-        settings.thighLen = THIGH_DEFAULT_LEN
-        settings.shinDia = SHIN_DEFAULT_DIA
-        settings.shinLen = SHIN_DEFAULT_LEN
-        settings.thighOffsetX = THIGH_DEFAULT_OFFSET_X
-        settings.thighOffsetY = THIGH_DEFAULT_OFFSET_Y
-        settings.thighOffsetZ = THIGH_DEFAULT_OFFSET_Z
-        settings.legJiggle = 1.0
-        settings.legColorR, settings.legColorG, settings.legColorB = 255, 200, 180
-        for _, info in ipairs(partOrder) do
-            local cfg = settings.tex[info[1]]
-            if cfg then
-                local d = defaultTexCfg()
-                for k, v in pairs(d) do cfg[k] = v end
-            end
-        end
+        settings.buttOffsetX = BUTT_DEFAULT_OFFSET_X
+        settings.buttOffsetY = BUTT_DEFAULT_OFFSET_Y
+        settings.buttOffsetZ = BUTT_DEFAULT_OFFSET_Z
+        settings.buttColorR, settings.buttColorG, settings.buttColorB = 255, 200, 180
+        settings.buttUseSkin = true
+        hasEaten = false
+        digestVisualScale = 1
+        eatAppearAlpha = 1
+        eatGrowScale = 1
+        pulseTarget = 1
         applySettings()
         updateChests()
         updateButts()
-        updateLegs()
-        if player.Character then
-            if isChestEnabled then createChests(player.Character) end
-            if isButtEnabled then createButts(player.Character) end
-            if isLegEnabled then createLegs(player.Character) end
-            pcall(function() updateAllTextures(player.Character) end)
-        end
         saveSettings()
     end)
 
@@ -2754,9 +2466,11 @@ local function buildUI()
     barBg.BorderSizePixel = 0
     barBg.Visible = false
     barBg.Parent = foodGui
+
     local bgCorner = Instance.new("UICorner")
     bgCorner.CornerRadius = UDim.new(0, 6)
     bgCorner.Parent = barBg
+
     local bgStroke = Instance.new("UIStroke")
     bgStroke.Color = Color3.fromRGB(80, 80, 90)
     bgStroke.Thickness = 2
@@ -2771,9 +2485,21 @@ local function buildUI()
     fill.BorderSizePixel = 0
     fill.Parent = barBg
     foodBarFill = fill
+
     local fillCorner = Instance.new("UICorner")
     fillCorner.CornerRadius = UDim.new(0, 4)
     fillCorner.Parent = fill
+
+    for k = 1, 19 do
+        local line = Instance.new("Frame")
+        line.Name = "Line" .. k
+        line.Size = UDim2.new(1, -6, 0, 1)
+        line.Position = UDim2.new(0, 3, 0, k * 21.6)
+        line.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+        line.BorderSizePixel = 0
+        line.ZIndex = 2
+        line.Parent = barBg
+    end
 
     local levelText = Instance.new("TextLabel")
     levelText.Name = "LevelText"
@@ -2799,13 +2525,59 @@ local function buildUI()
     slot.Visible = false
     slot.Parent = foodGui
     burgerSlot = slot
+
     local slotCorner = Instance.new("UICorner")
     slotCorner.CornerRadius = UDim.new(0, 8)
     slotCorner.Parent = slot
+
     local slotStroke = Instance.new("UIStroke")
     slotStroke.Color = Color3.fromRGB(120, 120, 140)
     slotStroke.Thickness = 2
     slotStroke.Parent = slot
+
+    local topBun = Instance.new("Frame")
+    topBun.Name = "TopBun"
+    topBun.Size = UDim2.new(0, 48, 0, 16)
+    topBun.Position = UDim2.new(0.5, -24, 0, 12)
+    topBun.BackgroundColor3 = Color3.fromRGB(210, 160, 90)
+    topBun.BorderSizePixel = 0
+    topBun.Parent = slot
+    local c1 = Instance.new("UICorner")
+    c1.CornerRadius = UDim.new(1, 0)
+    c1.Parent = topBun
+
+    local lettuce = Instance.new("Frame")
+    lettuce.Name = "Lettuce"
+    lettuce.Size = UDim2.new(0, 54, 0, 6)
+    lettuce.Position = UDim2.new(0.5, -27, 0, 28)
+    lettuce.BackgroundColor3 = Color3.fromRGB(100, 180, 70)
+    lettuce.BorderSizePixel = 0
+    lettuce.Parent = slot
+    local c2 = Instance.new("UICorner")
+    c2.CornerRadius = UDim.new(1, 0)
+    c2.Parent = lettuce
+
+    local patty = Instance.new("Frame")
+    patty.Name = "Patty"
+    patty.Size = UDim2.new(0, 52, 0, 12)
+    patty.Position = UDim2.new(0.5, -26, 0, 34)
+    patty.BackgroundColor3 = Color3.fromRGB(90, 55, 35)
+    patty.BorderSizePixel = 0
+    patty.Parent = slot
+    local c3 = Instance.new("UICorner")
+    c3.CornerRadius = UDim.new(1, 0)
+    c3.Parent = patty
+
+    local bottomBun = Instance.new("Frame")
+    bottomBun.Name = "BottomBun"
+    bottomBun.Size = UDim2.new(0, 48, 0, 14)
+    bottomBun.Position = UDim2.new(0.5, -24, 0, 46)
+    bottomBun.BackgroundColor3 = Color3.fromRGB(210, 160, 90)
+    bottomBun.BorderSizePixel = 0
+    bottomBun.Parent = slot
+    local c4 = Instance.new("UICorner")
+    c4.CornerRadius = UDim.new(0, 4)
+    c4.Parent = bottomBun
 
     local cdLabel = Instance.new("TextLabel")
     cdLabel.Name = "CdLabel"
@@ -2835,10 +2607,13 @@ local function onCharacterAdded(character)
     end
     if not t then return end
 
+    -- 如果开启了换装，先应用换装（会重建角色）
     if isAvatarSkinEnabled then
         local done = false
         task.spawn(function()
-            pcall(function() applyAvatarSkin(character) end)
+            pcall(function()
+                applyAvatarSkin(character)
+            end)
             done = true
         end)
         local waited = 0
@@ -2846,15 +2621,12 @@ local function onCharacterAdded(character)
             task.wait(0.1)
             waited = waited + 0.1
         end
-        character = player.Character
     end
 
     task.wait(0.1)
-    if not character or not getTorso(character) then return end
     createBelly(character)
     if isChestEnabled then createChests(character) end
     if isButtEnabled then createButts(character) end
-    if isLegEnabled then createLegs(character) end
 
     if isFoodModeEnabled then
         foodLevel = FOOD_START_LEVEL
@@ -2864,22 +2636,10 @@ end
 
 loadSettings()
 
--- ★ 先建 UI，保证即使角色初始化报错，UI 也不会消失
+if player.Character then onCharacterAdded(player.Character) end
+player.CharacterAdded:Connect(onCharacterAdded)
+
 buildUI()
-
-local function safeOnCharacterAdded(character)
-    local ok, err = pcall(onCharacterAdded, character)
-    if not ok then
-        warn("[Belly] onCharacterAdded 出错: " .. tostring(err))
-    end
-end
-
-if player.Character then
-    task.spawn(safeOnCharacterAdded, player.Character)
-end
-player.CharacterAdded:Connect(function(char)
-    task.spawn(safeOnCharacterAdded, char)
-end)
 
 local function onPlayerAdded(plr)
     if plr == player then return end
@@ -2894,16 +2654,14 @@ local function onPlayerAdded(plr)
                 tries = tries + 1
             end
             if t and shouldSyncPlayer(plr) then
-                pcall(function() createRemoteBelly(plr, char) end)
+                createRemoteBelly(plr, char)
             end
         end
     end
     if plr.Character then task.spawn(bind, plr.Character) end
-    plr.CharacterAdded:Connect(function(char)
-        destroyRemoteBelly(plr)
-        task.spawn(bind, char)
-    end)
+    plr.CharacterAdded:Connect(function(char) task.spawn(bind, char) end)
     plr.CharacterRemoving:Connect(function() destroyRemoteBelly(plr) end)
+    plr.CharacterAdded:Connect(function() task.delay(1.5, refreshSyncedPlayers) end)
 end
 
 for _, plr in ipairs(Players:GetPlayers()) do onPlayerAdded(plr) end
@@ -2913,7 +2671,7 @@ Players.PlayerRemoving:Connect(function(plr) destroyRemoteBelly(plr) end)
 task.spawn(function()
     while true do
         task.wait(3)
-        pcall(refreshSyncedPlayers)
+        refreshSyncedPlayers()
     end
 end)
 
@@ -2925,6 +2683,4 @@ player.CharacterRemoving:Connect(function()
     destroyBelly()
     destroyChests()
     destroyButts()
-    destroyLegs()
-    destroyAllTextures()
 end)
