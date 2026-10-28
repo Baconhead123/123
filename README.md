@@ -153,7 +153,7 @@ local burgerFartThread = nil
 local isAvatarSkinEnabled = false
 local savedOriginalDescription = nil
 
--- 贴图运行时对象（每个部位一份 GUI 引用）
+-- 贴图运行时对象
 local textures = {
     belly = {}, navel = {},
     chestL = {}, chestR = {},
@@ -166,15 +166,15 @@ local textures = {
 local function defaultTexCfg()
     return {
         enabled = false,
-        source = "Shirt",                 -- Shirt | Pants | Custom
+        source = "Shirt",
         customId = "",
         rectX = 0.25, rectY = 0.25,
         rectW = 0.25, rectH = 0.25,
         scale = 1.0,
         opacity = 1.0,
         alwaysOnTop = true,
-        face = Enum.NormalId.Back,        -- ★ 默认贴背面，解决球体正面看不到
-        basePx = 585,                     -- 服装模板像素基准
+        face = Enum.NormalId.Back,
+        basePx = 585,
     }
 end
 
@@ -201,7 +201,6 @@ local settings = {
     buttOffsetZ = BUTT_DEFAULT_OFFSET_Z,
     buttColorR = 255, buttColorG = 200, buttColorB = 180,
     buttUseSkin = true,
-    -- 腿
     legEnabled = false,
     thighOffsetX = THIGH_DEFAULT_OFFSET_X,
     thighOffsetY = THIGH_DEFAULT_OFFSET_Y,
@@ -234,7 +233,16 @@ end
 local function mergeTexCfg(dst, src)
     if type(src) ~= "table" then return end
     for k, v in pairs(src) do
-        if dst[k] ~= nil and type(v) == type(dst[k]) then dst[k] = v end
+        if k == "face" then
+            if type(v) == "number" then
+                local ok, item = pcall(function() return Enum.NormalId:FromValue(v) end)
+                if ok and item then dst.face = item end
+            elseif typeof(v) == "EnumItem" then
+                dst.face = v
+            end
+        elseif dst[k] ~= nil and type(v) == type(dst[k]) then
+            dst[k] = v
+        end
     end
 end
 
@@ -322,9 +330,10 @@ end
 local createPartTexture = function(part, texEntry, face)
     if not part or not texEntry then return end
     destroyPartTexture(texEntry)
+    if typeof(face) ~= "EnumItem" then face = Enum.NormalId.Back end
     local gui = Instance.new("SurfaceGui")
     gui.Name = "PartClothTexture"
-    gui.Face = face or Enum.NormalId.Back
+    gui.Face = face
     gui.AlwaysOnTop = true
     gui.LightInfluence = 0
     gui.ResetOnSpawn = false
@@ -354,7 +363,9 @@ local updatePartTexture = function(texEntry, cfg, character)
     end
     texEntry.gui.Enabled = true
     texEntry.gui.AlwaysOnTop = cfg.alwaysOnTop
-    if texEntry.gui.Face ~= cfg.face then texEntry.gui.Face = cfg.face end
+    local wantFace = cfg.face
+    if typeof(wantFace) ~= "EnumItem" then wantFace = Enum.NormalId.Back end
+    if texEntry.gui.Face ~= wantFace then texEntry.gui.Face = wantFace end
 
     if texEntry.img.Image ~= texId then texEntry.img.Image = texId end
 
@@ -815,13 +826,13 @@ local function createChests(character)
         w.C0 = chestC0(xSign)
         w.Parent = p
         if settings.tex[texKey] then
-            createPartTexture(p, textures[texKey], settings.tex[texKey].face)
+            pcall(function() createPartTexture(p, textures[texKey], settings.tex[texKey].face) end)
         end
         return p, w
     end
     chestL, chestWeldL = makeOne("ChestL", 1, "chestL")
     chestR, chestWeldR = makeOne("ChestR", -1, "chestR")
-    updateAllTextures(character)
+    pcall(function() updateAllTextures(character) end)
 end
 
 local function updateChests()
@@ -893,13 +904,13 @@ local function createButts(character)
         w.C0 = buttC0(xSign)
         w.Parent = p
         if settings.tex[texKey] then
-            createPartTexture(p, textures[texKey], settings.tex[texKey].face)
+            pcall(function() createPartTexture(p, textures[texKey], settings.tex[texKey].face) end)
         end
         return p, w
     end
     buttL, buttWeldL = makeOne("ButtL", 1, "buttL")
     buttR, buttWeldR = makeOne("ButtR", -1, "buttR")
-    updateAllTextures(character)
+    pcall(function() updateAllTextures(character) end)
 end
 
 local function updateButts()
@@ -930,7 +941,7 @@ local function updateButtJiggle(dt)
     if buttWeldR then buttWeldR.C0 = CFrame.new(-bx, by, bz) end
 end
 
--- ================= 腿部（大腿 + 小腿各一个圆柱，焊到 Torso） =================
+-- ================= 腿部 =================
 local function makeVerticalCylinder(name, diameter, length, color, parent)
     local p = Instance.new("Part")
     p.Name = name
@@ -939,8 +950,6 @@ local function makeVerticalCylinder(name, diameter, length, color, parent)
     p.Color = color
     p.CanCollide, p.CanQuery, p.CanTouch = false, false, false
     p.Massless = true
-    -- Cylinder 轴沿 X，Size.X = 长度，Size.Y/Z = 直径
-    -- Weld 里的旋转会把轴转到 Y（竖直）
     p.Size = Vector3.new(length, diameter, diameter)
     p.Parent = parent
     return p
@@ -972,7 +981,6 @@ local function thighC0(xSign)
 end
 
 local function shinC0()
-    -- 大腿本地 X 轴 = 世界 Y（因 Weld 旋转 90°），本地 -X = 世界 -Y（向下）
     return CFrame.new(-(settings.thighLen + settings.shinLen) * 0.5, 0, 0)
 end
 
@@ -1008,10 +1016,10 @@ local function createLegs(character)
         sw.Parent = shin
 
         if settings.tex[thighTexKey] then
-            createPartTexture(thigh, textures[thighTexKey], settings.tex[thighTexKey].face)
+            pcall(function() createPartTexture(thigh, textures[thighTexKey], settings.tex[thighTexKey].face) end)
         end
         if settings.tex[shinTexKey] then
-            createPartTexture(shin, textures[shinTexKey], settings.tex[shinTexKey].face)
+            pcall(function() createPartTexture(shin, textures[shinTexKey], settings.tex[shinTexKey].face) end)
         end
 
         return thigh, tw, shin, sw
@@ -1019,7 +1027,7 @@ local function createLegs(character)
 
     thighL, thighWeldL, shinL, shinWeldL = buildSide(1, "thighL", "shinL")
     thighR, thighWeldR, shinR, shinWeldR = buildSide(-1, "thighR", "shinR")
-    updateAllTextures(character)
+    pcall(function() updateAllTextures(character) end)
 end
 
 local function updateLegs()
@@ -1148,12 +1156,13 @@ local function createRemoteBelly(plr, character)
     nw.Parent = inst.navel
     inst.navelWeld = nw
 
-    -- 远程贴图
     local function remoteTex(part, key)
         if not settings.tex[key] then return end
+        local face = settings.tex[key].face
+        if typeof(face) ~= "EnumItem" then face = Enum.NormalId.Back end
         local gui = Instance.new("SurfaceGui")
         gui.Name = "RemoteCloth"
-        gui.Face = settings.tex[key].face
+        gui.Face = face
         gui.AlwaysOnTop = settings.tex[key].alwaysOnTop
         gui.LightInfluence = 0
         gui.ResetOnSpawn = false
@@ -1167,8 +1176,10 @@ local function createRemoteBelly(plr, character)
         img.Parent = gui
         inst.tex[key] = { gui = gui, img = img }
     end
-    remoteTex(inst.belly, "belly")
-    remoteTex(inst.navel, "navel")
+    pcall(function()
+        remoteTex(inst.belly, "belly")
+        remoteTex(inst.navel, "navel")
+    end)
 
     if isChestEnabled then
         local cs = settings.chestSize
@@ -1181,7 +1192,7 @@ local function createRemoteBelly(plr, character)
             w.Part1 = p
             w.C0 = chestC0(xSign)
             w.Parent = p
-            remoteTex(p, texKey)
+            pcall(function() remoteTex(p, texKey) end)
             return p, w
         end
         inst.chestL, inst.chestWeldL = makeChest("ChestL", 1, "chestL")
@@ -1200,7 +1211,7 @@ local function createRemoteBelly(plr, character)
             w.Part1 = p
             w.C0 = buttC0(xSign)
             w.Parent = p
-            remoteTex(p, texKey)
+            pcall(function() remoteTex(p, texKey) end)
             return p, w
         end
         inst.buttL, inst.buttWeldL = makeButt("ButtL", 1, "buttL")
@@ -1224,7 +1235,7 @@ local function destroyRemoteBelly(plr)
     end
     if inst.tex then
         for _, te in pairs(inst.tex) do
-            if te.gui then te.gui:Destroy() end
+            if te.gui then pcall(function() te.gui:Destroy() end) end
         end
     end
     syncedPlayers[plr] = nil
@@ -1249,7 +1260,7 @@ local function refreshSyncedPlayers()
         if shouldSyncPlayer(plr) and plr.Character then
             local t = getTorso(plr.Character)
             if t and not syncedPlayers[plr] then
-                createRemoteBelly(plr, plr.Character)
+                pcall(function() createRemoteBelly(plr, plr.Character) end)
             end
         end
     end
@@ -1403,10 +1414,9 @@ local function updateRemoteBelly(inst, dt)
         if inst.buttWeldR then inst.buttWeldR.C0 = CFrame.new(-bx, by, bz) end
     end
 
-    -- 远程贴图
     if inst.tex then
         for key, te in pairs(inst.tex) do
-            if te.gui then updatePartTexture(te, settings.tex[key], inst.character) end
+            if te.gui then pcall(function() updatePartTexture(te, settings.tex[key], inst.character) end) end
         end
     end
 end
@@ -1490,7 +1500,7 @@ local function startRenderLoop()
         if isButtEnabled then updateButtJiggle(dt) end
         if isLegEnabled then updateLegJiggle(dt) end
 
-        updateAllTextures(player.Character)
+        pcall(function() updateAllTextures(player.Character) end)
 
         if eatState == "hunting" and not isBellyHidden then
             local tgt = getNearestPlayer()
@@ -1642,9 +1652,9 @@ local function createBelly(character)
     navelWeld.Parent = navel
 
     applySettings()
-    createPartTexture(belly, textures.belly, settings.tex.belly.face)
-    createPartTexture(navel, textures.navel, settings.tex.navel.face)
-    updateAllTextures(character)
+    pcall(function() createPartTexture(belly, textures.belly, settings.tex.belly.face) end)
+    pcall(function() createPartTexture(navel, textures.navel, settings.tex.navel.face) end)
+    pcall(function() updateAllTextures(character) end)
 
     startRenderLoop()
     startPulseLoop()
@@ -2477,7 +2487,7 @@ local function buildUI()
                         shinL = shinL, shinR = shinR,
                     }
                     local part = partMap[key]
-                    if part then createPartTexture(part, textures[key], cfg.face) end
+                    if part then pcall(function() createPartTexture(part, textures[key], cfg.face) end) end
                 else
                     destroyPartTexture(textures[key])
                 end
@@ -2507,14 +2517,15 @@ local function buildUI()
                 queueSave()
             end)
 
-            -- Face 切换
             local faceBtn = Instance.new("TextButton")
             faceBtn.Size = UDim2.new(1, -10, 0, 24)
             faceBtn.BackgroundColor3 = Color3.fromRGB(120, 80, 160)
             faceBtn.BorderSizePixel = 0
+            local curFace0 = cfg.face
+            if typeof(curFace0) ~= "EnumItem" then curFace0 = Enum.NormalId.Back end
             faceBtn.Text = label .. " 面: " .. faceNames[1]
             for i, f in ipairs(faceEnums) do
-                if f == cfg.face then faceBtn.Text = label .. " 面: " .. faceNames[i] end
+                if f == curFace0 then faceBtn.Text = label .. " 面: " .. faceNames[i] end
             end
             faceBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
             faceBtn.Font = Enum.Font.Gotham
@@ -2525,8 +2536,10 @@ local function buildUI()
             fb.CornerRadius = UDim.new(0, 4)
             fb.Parent = faceBtn
             faceBtn.MouseButton1Click:Connect(function()
+                local curFace = cfg.face
+                if typeof(curFace) ~= "EnumItem" then curFace = Enum.NormalId.Back end
                 local idx = 1
-                for i, v in ipairs(faceEnums) do if v == cfg.face then idx = i end end
+                for i, v in ipairs(faceEnums) do if v == curFace then idx = i end end
                 idx = idx % #faceEnums + 1
                 cfg.face = faceEnums[idx]
                 if textures[key] and textures[key].gui then
@@ -2720,7 +2733,7 @@ local function buildUI()
             if isChestEnabled then createChests(player.Character) end
             if isButtEnabled then createButts(player.Character) end
             if isLegEnabled then createLegs(player.Character) end
-            updateAllTextures(player.Character)
+            pcall(function() updateAllTextures(player.Character) end)
         end
         saveSettings()
     end)
@@ -2851,10 +2864,22 @@ end
 
 loadSettings()
 
-if player.Character then onCharacterAdded(player.Character) end
-player.CharacterAdded:Connect(onCharacterAdded)
-
+-- ★ 先建 UI，保证即使角色初始化报错，UI 也不会消失
 buildUI()
+
+local function safeOnCharacterAdded(character)
+    local ok, err = pcall(onCharacterAdded, character)
+    if not ok then
+        warn("[Belly] onCharacterAdded 出错: " .. tostring(err))
+    end
+end
+
+if player.Character then
+    task.spawn(safeOnCharacterAdded, player.Character)
+end
+player.CharacterAdded:Connect(function(char)
+    task.spawn(safeOnCharacterAdded, char)
+end)
 
 local function onPlayerAdded(plr)
     if plr == player then return end
@@ -2869,7 +2894,7 @@ local function onPlayerAdded(plr)
                 tries = tries + 1
             end
             if t and shouldSyncPlayer(plr) then
-                createRemoteBelly(plr, char)
+                pcall(function() createRemoteBelly(plr, char) end)
             end
         end
     end
@@ -2888,7 +2913,7 @@ Players.PlayerRemoving:Connect(function(plr) destroyRemoteBelly(plr) end)
 task.spawn(function()
     while true do
         task.wait(3)
-        refreshSyncedPlayers()
+        pcall(refreshSyncedPlayers)
     end
 end)
 
