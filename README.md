@@ -76,14 +76,16 @@ local AVATAR_IDS_1 = {
 	Pants = 13840357309,
 }
 local AVATAR_IDS_2 = {
-	Head = 12333457082,
+	Head = 139441037781723,
+	Neck = 18322309584,
 	Waist = 12899703533,
 	Shirt = 13898229401,
 	Pants = 13499361456,
 }
 local AVATAR_IDS_3 = {
 	Head = 13515468652,
-	Waist = 18129126271,
+	Neck = 18322309584,
+	Waist = 12899708317,
 	Shirt = 13840345787,
 	Pants = 17899810437,
 }
@@ -673,7 +675,7 @@ local function applyAvatarSkin1(character)
 	end
 end
 
--- 模式2：头部饰品 + 腰部饰品 + 衬衫 + 裤子
+-- 模式2：头部饰品 + 颈部饰品 + 腰部饰品 + 衬衫 + 裤子
 local function applyAvatarSkin2(character)
 	if not character then return end
 	local hum = character:FindFirstChildOfClass("Humanoid")
@@ -706,11 +708,12 @@ local function applyAvatarSkin2(character)
 	head = character:FindFirstChild("Head")
 	if head then
 		addAccessory(character, head, AVATAR_IDS_2.Head)
+		addAccessory(character, head, AVATAR_IDS_2.Neck)
 		addAccessory(character, head, AVATAR_IDS_2.Waist)
 	end
 end
 
--- 模式3：头部饰品 + 腰部饰品 + 衬衫 + 裤子
+-- 模式3：头部饰品 + 颈部饰品 + 腰部饰品 + 衬衫 + 裤子
 local function applyAvatarSkin3(character)
 	if not character then return end
 	local hum = character:FindFirstChildOfClass("Humanoid")
@@ -743,6 +746,7 @@ local function applyAvatarSkin3(character)
 	head = character:FindFirstChild("Head")
 	if head then
 		addAccessory(character, head, AVATAR_IDS_3.Head)
+		addAccessory(character, head, AVATAR_IDS_3.Neck)
 		addAccessory(character, head, AVATAR_IDS_3.Waist)
 	end
 end
@@ -2364,6 +2368,7 @@ local function buildUI()
 	-- ===== 开关 =====
 	makeToggle("抖动效果", isShakingEnabled, function(on)
 		isShakingEnabled = on
+		settings.shakeEnabled = on
 		if on then
 			startShakeLoop()
 		else
@@ -2371,6 +2376,7 @@ local function buildUI()
 		end
 	end)
 	makeToggle("挣扎效果", isStrugglingEnabled, function(on)
+		settings.struggleEnabled = on
 		if on then
 			isStrugglingEnabled = true
 			ensureBulges()
@@ -2380,15 +2386,20 @@ local function buildUI()
 		end
 	end)
 	makeToggle("吃人玩法", eatModeEnabled, function(on)
+		settings.eatModeEnabled = on
 		if on then
 			startEatMode()
 		else
 			stopEatMode()
 		end
 	end)
-	makeToggle("吃人动画", eatAnimationEnabled, function(on) eatAnimationEnabled = on end)
+	makeToggle("吃人动画", eatAnimationEnabled, function(on)
+		eatAnimationEnabled = on
+		settings.eatAnimationEnabled = on
+	end)
 	makeToggle("真实胸部", isChestEnabled, function(on)
 		isChestEnabled = on
+		settings.chestEnabled = on
 		if on then
 			if player.Character then
 				createChests(player.Character)
@@ -2430,6 +2441,7 @@ local function buildUI()
 	end)
 	makeToggle("真实屁股", isButtEnabled, function(on)
 		isButtEnabled = on
+		settings.buttEnabled = on
 		if on then
 			if player.Character then
 				createButts(player.Character)
@@ -2470,6 +2482,7 @@ local function buildUI()
 		updateButts()
 	end)
 	makeToggle("剧烈模式", isViolentMode, function(on)
+		settings.violentMode = on
 		if on then
 			startViolentMode()
 		else
@@ -2478,12 +2491,14 @@ local function buildUI()
 	end)
 	makeToggle("肚子碰撞箱（挤压）", isBellyCollideEnabled, function(on)
 		isBellyCollideEnabled = on
+		settings.bellyCollideEnabled = on
 		if not on then
 			bellySqueezeTarget = Vector3.new(1, 1, 1)
 		end
 	end)
 	makeToggle("肚子实体碰撞", isBellyPhysicalCollide, function(on)
 		isBellyPhysicalCollide = on
+		settings.bellyPhysicalCollide = on
 		if belly then
 			belly.CanCollide = on
 		end
@@ -2494,6 +2509,7 @@ local function buildUI()
 		end
 	end)
 	makeToggle("吃东西模式", isFoodModeEnabled, function(on)
+		settings.foodModeEnabled = on
 		if on then
 			startFoodMode()
 		else
@@ -2780,6 +2796,7 @@ local function buildUI()
 	cbc.Parent = closeBellyBtn
 	closeBellyBtn.MouseButton1Click:Connect(function()
 		isBellyHidden = not isBellyHidden
+		settings.bellyHidden = isBellyHidden
 		if isBellyHidden then
 			closeBellyBtn.Text = "打开肚子"
 			closeBellyBtn.BackgroundColor3 = Color3.fromRGB(80, 160, 100)
