@@ -91,17 +91,6 @@ local AVATAR_IDS_3 = {
 }
 local SETTINGS_FILE = "belly_settings.json"
 
--- ================= 胃部屏幕配置 =================
-local STOMACH_FAR_POSITION = Vector3.new(0, -2000, 0)
-local STOMACH_RADIUS = 60
-local STOMACH_WALL_THICKNESS = 3
-local STOMACH_WALL_SEGMENTS = 24
-local STOMACH_COLOR = Color3.fromRGB(160, 30, 30)
-local STOMACH_INNER_COLOR = Color3.fromRGB(120, 20, 20)
-local STOMACH_WRIGGLE_AMP = 4
-local STOMACH_WRIGGLE_SPEED = 1.2
-local STOMACH_CAMERA_OFFSET = Vector3.new(0, 8, 0)
-
 -- ================= 状态 =================
 local belly, bellyWeld, navel, navelWeld, torso, rootPart, renderConn
 local isShakingEnabled, shakeThread, isShakingNow = false, nil, false
@@ -153,19 +142,8 @@ local burgerFartThread = nil
 
 -- 换装
 local isAvatarSkinEnabled = false
-local avatarMode = 0
+local avatarMode = 0 -- 0=关, 1=模式1, 2=模式2, 3=模式3
 local savedOriginalDescription = nil
-
--- 胃部屏幕状态
-local isStomachScreenEnabled = false
-local stomachFolder = nil
-local stomachWalls = {}
-local stomachConn = nil
-local stomachCamera = nil
-local stomachViewActive = false
-local savedCameraCFrame = nil
-local stomachGui = nil
-local stomachScreenBtn = nil
 
 -- forward decls
 local applySettings
@@ -179,11 +157,6 @@ local startRenderLoop
 local startStruggleLoop
 local stopStruggleLoop
 local createBelly
-local enterStomachView
-local exitStomachView
-local toggleStomachView
-local enableStomachScreen
-local disableStomachScreen
 
 local settings = {
 	sizeScale = BASE_SIZE_SCALE,
@@ -229,6 +202,7 @@ local settings = {
 	syncSelectedPlayerName = "",
 	avatarSkinEnabled = false,
 	avatarMode = 0,
+	-- 开关状态
 	shakeEnabled = false,
 	struggleEnabled = false,
 	eatModeEnabled = false,
@@ -240,7 +214,6 @@ local settings = {
 	bellyPhysicalCollide = false,
 	foodModeEnabled = false,
 	bellyHidden = false,
-	stomachScreenEnabled = false,
 }
 
 -- ================= 持久化 =================
@@ -275,6 +248,7 @@ local function loadSettings()
 	end
 	isAvatarSkinEnabled = settings.avatarSkinEnabled or false
 	avatarMode = settings.avatarMode or 0
+	-- 恢复开关状态
 	isShakingEnabled = settings.shakeEnabled or false
 	isStrugglingEnabled = settings.struggleEnabled or false
 	eatModeEnabled = settings.eatModeEnabled or false
@@ -286,7 +260,6 @@ local function loadSettings()
 	isBellyPhysicalCollide = settings.bellyPhysicalCollide or false
 	isFoodModeEnabled = settings.foodModeEnabled or false
 	isBellyHidden = settings.bellyHidden or false
-	isStomachScreenEnabled = settings.stomachScreenEnabled or false
 end
 
 local saveDebounce = false
@@ -652,6 +625,7 @@ local function clearAvatarParts(character)
 	end
 end
 
+-- 模式1：完整换装
 local function applyAvatarSkin1(character)
 	if not character then return end
 	local hum = character:FindFirstChildOfClass("Humanoid")
@@ -701,6 +675,7 @@ local function applyAvatarSkin1(character)
 	end
 end
 
+-- 模式2：头部饰品 + 颈部饰品 + 腰部饰品 + 衬衫 + 裤子
 local function applyAvatarSkin2(character)
 	if not character then return end
 	local hum = character:FindFirstChildOfClass("Humanoid")
@@ -738,6 +713,7 @@ local function applyAvatarSkin2(character)
 	end
 end
 
+-- 模式3：头部饰品 + 颈部饰品 + 腰部饰品 + 衬衫 + 裤子
 local function applyAvatarSkin3(character)
 	if not character then return end
 	local hum = character:FindFirstChildOfClass("Humanoid")
@@ -798,235 +774,6 @@ local function removeAvatarSkin(character)
 			task.wait(0.8)
 		end
 	end
-end
-
--- ================= 胃部屏幕系统 =================
-local function buildStomach()
-	if stomachFolder then
-		stomachFolder:Destroy()
-		stomachFolder = nil
-	end
-	stomachWalls = {}
-
-	local origin = STOMACH_FAR_POSITION
-
-	local anchor = Instance.new("Part")
-	anchor.Name = "StomachAnchor"
-	anchor.Size = Vector3.new(1, 1, 1)
-	anchor.Transparency = 1
-	anchor.Anchored = true
-	anchor.CanCollide = false
-	anchor.CanQuery = false
-	anchor.CanTouch = false
-	anchor.Position = origin
-	anchor.Parent = Workspace
-
-	stomachFolder = Instance.new("Folder")
-	stomachFolder.Name = "ClientStomach"
-	stomachFolder.Parent = Workspace
-
-	anchor.Parent = stomachFolder
-
-	for i = 1, STOMACH_WALL_SEGMENTS do
-		local angle = (i / STOMACH_WALL_SEGMENTS) * math.pi * 2
-		local dir = Vector3.new(math.cos(angle), 0, math.sin(angle))
-		local upDir = Vector3.new(0, 1, 0)
-
-		for j = 1, 2 do
-			local pitch = (j == 1) and math.rad(35) or math.rad(-35)
-			local part = Instance.new("Part")
-			part.Name = string.format("StomachWall_%d_%d", i, j)
-			part.Shape = Enum.PartType.Ball
-			part.Size = Vector3.new(
-				STOMACH_RADIUS * 2.2 / STOMACH_WALL_SEGMENTS * 1.6,
-				STOMACH_RADIUS * 2.2 / STOMACH_WALL_SEGMENTS * 1.6,
-				STOMACH_RADIUS * 2.2 / STOMACH_WALL_SEGMENTS * 1.6
-			)
-			part.Color = STOMACH_COLOR
-			part.Material = Enum.Material.SmoothPlastic
-			part.Anchored = true
-			part.CanCollide = true
-			part.CanQuery = false
-			part.CanTouch = false
-			part.Transparency = 0
-
-			local basePos = origin + dir * STOMACH_RADIUS * math.cos(pitch) + upDir * STOMACH_RADIUS * math.sin(pitch)
-			part.Position = basePos
-			part.Parent = stomachFolder
-
-			table.insert(stomachWalls, {
-				part = part,
-				basePosition = basePos,
-				dir = dir,
-				pitch = pitch,
-				phase = math.random() * math.pi * 2,
-				baseSize = STOMACH_RADIUS * 2.2 / STOMACH_WALL_SEGMENTS * 1.6,
-			})
-		end
-	end
-
-	local topCap = Instance.new("Part")
-	topCap.Name = "StomachTop"
-	topCap.Shape = Enum.PartType.Ball
-	topCap.Size = Vector3.new(STOMACH_RADIUS * 1.8, STOMACH_RADIUS * 1.8, STOMACH_RADIUS * 1.8)
-	topCap.Color = STOMACH_INNER_COLOR
-	topCap.Material = Enum.Material.SmoothPlastic
-	topCap.Anchored = true
-	topCap.CanCollide = false
-	topCap.CanQuery = false
-	topCap.CanTouch = false
-	topCap.Transparency = 0.35
-	topCap.Position = origin + Vector3.new(0, STOMACH_RADIUS * 1.1, 0)
-	topCap.Parent = stomachFolder
-
-	local bottomCap = Instance.new("Part")
-	bottomCap.Name = "StomachBottom"
-	bottomCap.Shape = Enum.PartType.Ball
-	bottomCap.Size = Vector3.new(STOMACH_RADIUS * 1.8, STOMACH_RADIUS * 1.8, STOMACH_RADIUS * 1.8)
-	bottomCap.Color = STOMACH_INNER_COLOR
-	bottomCap.Material = Enum.Material.SmoothPlastic
-	bottomCap.Anchored = true
-	bottomCap.CanCollide = true
-	bottomCap.CanQuery = false
-	bottomCap.CanTouch = false
-	bottomCap.Parent = stomachFolder
-	bottomCap.Position = origin + Vector3.new(0, -STOMACH_RADIUS * 1.1, 0)
-
-	local light = Instance.new("PointLight")
-	light.Color = Color3.fromRGB(255, 80, 80)
-	light.Range = STOMACH_RADIUS * 2
-	light.Brightness = 1.2
-	light.Parent = anchor
-end
-
-local function destroyStomach()
-	if stomachConn then
-		stomachConn:Disconnect()
-		stomachConn = nil
-	end
-	if stomachFolder then
-		stomachFolder:Destroy()
-		stomachFolder = nil
-	end
-	stomachWalls = {}
-end
-
-local function updateStomachWalls(dt)
-	local t = tick()
-	for _, w in ipairs(stomachWalls) do
-		if not w.part or not w.part.Parent then continue end
-		local wobble = math.sin(t * STOMACH_WRIGGLE_SPEED + w.phase) * STOMACH_WRIGGLE_AMP
-		local inward = math.sin(t * STOMACH_WRIGGLE_SPEED * 1.7 + w.phase * 1.3) * STOMACH_WRIGGLE_AMP * 0.6
-		local pos = w.basePosition
-			+ w.dir * (wobble + inward)
-			+ Vector3.new(0, math.cos(t * STOMACH_WRIGGLE_SPEED * 0.8 + w.phase) * STOMACH_WRIGGLE_AMP * 0.5, 0)
-		w.part.Position = pos
-		local scale = 1 + math.sin(t * STOMACH_WRIGGLE_SPEED * 1.4 + w.phase) * 0.08
-		w.part.Size = Vector3.new(w.baseSize * scale, w.baseSize * scale, w.baseSize * scale)
-	end
-end
-
-local function startStomachLoop()
-	if stomachConn then
-		stomachConn:Disconnect()
-	end
-	stomachConn = RunService.RenderStepped:Connect(function(dt)
-		if not isStomachScreenEnabled then return end
-		updateStomachWalls(dt)
-		if stomachViewActive and player.Character then
-			player.Character:PivotTo(CFrame.new(STOMACH_FAR_POSITION + STOMACH_CAMERA_OFFSET))
-		end
-	end)
-end
-
-enableStomachScreen = function()
-	if isStomachScreenEnabled then return end
-	isStomachScreenEnabled = true
-	buildStomach()
-	startStomachLoop()
-end
-
-disableStomachScreen = function()
-	isStomachScreenEnabled = false
-	exitStomachView()
-	destroyStomach()
-	settings.stomachScreenEnabled = false
-end
-
-enterStomachView = function()
-	if not isStomachScreenEnabled then return end
-	local char = player.Character
-	if not char then return end
-	local hrp = char:FindFirstChild("HumanoidRootPart")
-	if not hrp then return end
-
-	local cam = Workspace.CurrentCamera
-	savedCameraCFrame = cam.CFrame
-	stomachViewActive = true
-
-	char:PivotTo(CFrame.new(STOMACH_FAR_POSITION + STOMACH_CAMERA_OFFSET))
-
-	cam.CameraType = Enum.CameraType.Scriptable
-	cam.CFrame = CFrame.new(STOMACH_FAR_POSITION + STOMACH_CAMERA_OFFSET, STOMACH_FAR_POSITION)
-
-	if stomachCamera then
-		stomachCamera:Disconnect()
-	end
-	stomachCamera = RunService.RenderStepped:Connect(function()
-		if not stomachViewActive then return end
-		local c = Workspace.CurrentCamera
-		if not c then return end
-		c.CameraType = Enum.CameraType.Scriptable
-		c.CFrame = CFrame.new(STOMACH_FAR_POSITION + STOMACH_CAMERA_OFFSET, STOMACH_FAR_POSITION)
-	end)
-
-	if stomachScreenBtn then
-		stomachScreenBtn.Text = "退出胃部"
-		stomachScreenBtn.BackgroundColor3 = Color3.fromRGB(180, 80, 80)
-	end
-end
-
-exitStomachView = function()
-	if not stomachViewActive then return end
-	stomachViewActive = false
-	if stomachCamera then
-		stomachCamera:Disconnect()
-		stomachCamera = nil
-	end
-	local cam = Workspace.CurrentCamera
-	if cam and savedCameraCFrame then
-		cam.CameraType = Enum.CameraType.Custom
-	end
-	local char = player.Character
-	if char then
-		char:PivotTo(CFrame.new(STOMACH_FAR_POSITION + Vector3.new(0, STOMACH_RADIUS * 3, 0)))
-	end
-	if cam and char then
-		local hrp = char:FindFirstChild("HumanoidRootPart")
-		if hrp then
-			cam.CFrame = hrp.CFrame
-		end
-	end
-	if stomachScreenBtn then
-		stomachScreenBtn.Text = "进入胃部"
-		stomachScreenBtn.BackgroundColor3 = Color3.fromRGB(80, 120, 200)
-	end
-end
-
-toggleStomachView = function()
-	if not isStomachScreenEnabled then return end
-	if stomachViewActive then
-		exitStomachView()
-	else
-		enterStomachView()
-	end
-end
-
--- 获取被吃玩家在胃里的落点
-local function getStomachDropPos()
-	local angle = math.random() * math.pi * 2
-	local r = math.random() * STOMACH_RADIUS * 0.5
-	return STOMACH_FAR_POSITION + Vector3.new(math.cos(angle) * r, -STOMACH_RADIUS * 0.4, math.sin(angle) * r)
 end
 
 -- ================= 胸部 =================
@@ -1844,7 +1591,7 @@ local function hideEatenPlayer(p)
 	eatenOriginalTransparency = {}
 	eatenOriginalPivot = p.Character:GetPivot()
 	setCharacterTransparency(p.Character, 0)
-	p.Character:PivotTo(CFrame.new(getStomachDropPos()))
+	p.Character:PivotTo(CFrame.new(0, -500, 0))
 end
 
 local function playEatAnimation(p)
@@ -1934,8 +1681,7 @@ local function playEatAnimation(p)
 	end
 	eatAppearAlpha = 1
 	eatGrowScale = 1
-	-- 进入胃部
-	char:PivotTo(CFrame.new(getStomachDropPos()))
+	char:PivotTo(CFrame.new(0, -500, 0))
 end
 
 local function restoreEatenPlayer()
@@ -2366,7 +2112,7 @@ local function buildUI()
 	scroll.BackgroundTransparency = 1
 	scroll.BorderSizePixel = 0
 	scroll.ScrollBarThickness = 4
-	scroll.CanvasSize = UDim2.new(0, 0, 0, 5800)
+	scroll.CanvasSize = UDim2.new(0, 0, 0, 5200)
 	scroll.Parent = mainFrame
 
 	local layout = Instance.new("UIListLayout")
@@ -3034,37 +2780,6 @@ local function buildUI()
 		refreshSyncedPlayers()
 	end)
 
-	-- ===== 胃部屏幕 =====
-	makeToggle("胃部屏幕", isStomachScreenEnabled, function(on)
-		settings.stomachScreenEnabled = on
-		if on then
-			enableStomachScreen()
-		else
-			disableStomachScreen()
-		end
-	end)
-
-	stomachScreenBtn = Instance.new("TextButton")
-	stomachScreenBtn.Size = UDim2.new(1, -10, 0, 36)
-	stomachScreenBtn.BackgroundColor3 = Color3.fromRGB(80, 120, 200)
-	stomachScreenBtn.BorderSizePixel = 0
-	stomachScreenBtn.Text = "进入胃部"
-	stomachScreenBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-	stomachScreenBtn.Font = Enum.Font.GothamBold
-	stomachScreenBtn.TextSize = 14
-	stomachScreenBtn.LayoutOrder = nextY()
-	stomachScreenBtn.Parent = scroll
-	local ssc = Instance.new("UICorner")
-	ssc.CornerRadius = UDim.new(0, 4)
-	ssc.Parent = stomachScreenBtn
-	stomachScreenBtn.MouseButton1Click:Connect(function()
-		if not isStomachScreenEnabled then
-			enableStomachScreen()
-		end
-		toggleStomachView()
-		queueSave()
-	end)
-
 	-- ===== 关闭肚子 =====
 	local closeBellyBtn = Instance.new("TextButton")
 	closeBellyBtn.Size = UDim2.new(1, -10, 0, 32)
@@ -3337,15 +3052,9 @@ local function onCharacterAdded(character)
 		foodLevel = FOOD_START_LEVEL
 		updateFoodUI()
 	end
-	if isStomachScreenEnabled then
-		enableStomachScreen()
-	end
 end
 
 loadSettings()
-if isStomachScreenEnabled then
-	task.spawn(enableStomachScreen)
-end
 if player.Character then
 	onCharacterAdded(player.Character)
 end
@@ -3403,6 +3112,4 @@ player.CharacterRemoving:Connect(function()
 	destroyBelly()
 	destroyChests()
 	destroyButts()
-	exitStomachView()
-	disableStomachScreen()
 end)
